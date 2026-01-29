@@ -1,0 +1,160 @@
+register.css
+* {
+    box-sizing: border-box;
+    font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+    margin: 0;
+    height: 100vh;
+    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Glowing animated background bubbles */
+body::before, body::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(100px);
+    animation: float 12s ease-in-out infinite alternate;
+    z-index: 0;
+}
+
+body::before {
+    width: 350px;
+    height: 350px;
+    background: rgba(16, 163, 127, 0.3);
+    top: -100px;
+    left: -80px;
+}
+
+body::after {
+    width: 400px;
+    height: 400px;
+    background: rgba(255, 255, 255, 0.1);
+    bottom: -120px;
+    right: -100px;
+}
+
+@keyframes float {
+    0% { transform: translateY(0) translateX(0); }
+    50% { transform: translateY(-30px) translateX(20px); }
+    100% { transform: translateY(0) translateX(0); }
+}
+
+/* Main Card */
+.auth-box {
+    position: relative;
+    z-index: 1;
+    width: 400px;
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(15px);
+    padding: 40px;
+    border-radius: 24px;
+    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.5);
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.auth-box:hover {
+    transform: translateY(-10px) scale(1.02);
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.6);
+}
+
+/* Title */
+.auth-box h2 {
+    margin-bottom: 30px;
+    font-size: 28px;
+    font-weight: 700;
+    background: linear-gradient(90deg, #10a37f, #52d8b0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+/* Inputs */
+input {
+    width: 100%;
+    padding: 16px;
+    margin-bottom: 16px;
+    border-radius: 12px;
+    border: none;
+    font-size: 15px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    transition: box-shadow 0.3s, transform 0.2s;
+    box-shadow: inset 2px 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+input::placeholder {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+input:focus {
+    outline: none;
+    box-shadow: 0 0 10px #10a37f, 0 0 20px #52d8b0;
+    transform: scale(1.02);
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* Button */
+button {
+    width: 100%;
+    padding: 16px;
+    margin-top: 10px;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(90deg, #10a37f, #52d8b0);
+    color: white;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.3s;
+    box-shadow: 0 6px 15px rgba(16, 163, 127, 0.5);
+}
+
+button:hover {
+    background: linear-gradient(90deg, #0e8f6e, #3cc39b);
+    box-shadow: 0 10px 25px rgba(16, 163, 127, 0.6);
+}
+
+button:active {
+    transform: scale(0.97);
+}
+
+/* Switch text */
+.switch {
+    margin-top: 22px;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.switch a {
+    color: #10a37f;
+    font-weight: 500;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.switch a:hover {
+    color: #52d8b0;
+    text-decoration: underline;
+}
+
+/* Hidden */
+.hidden {
+    display: none;
+}
+
+/* Mobile */
+@media (max-width: 420px) {
+    .auth-box {
+        width: 90%;
+        padding: 30px;
+    }
+}
