@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign Up | Leak Check</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <!-- Navigation -->
+    <nav>
+        <div class="logo">Leak<span>Check</span></div>
+        <ul>
+            <li><a href="index.html">Home</a></li>
+            <li><a href="index.html#features">Features</a></li>
+            <li><a href="index.html#about">About</a></li>
+            <li><a href="index.html#contact">Contact</a></li>
+        </ul>
+    </nav>
+
+    <!-- Signup Section -->
+    <section class="auth-section">
+        <div class="auth-container">
+            <h2>Create Account</h2>
+            <p>Join Leak Check to secure your AI models</p>
+            <form class="auth-form" id="signupForm">
+                <div class="form-group">
+                    <input type="text" id="name" placeholder="Full Name" required>
+                </div>
+                <div class="form-group">
+                    <input type="email" id="email" placeholder="Email Address" required>
+                </div>
+                <div class="form-group">
+                    <input type="password" id="password" placeholder="Password" required>
+                </div>
+                <div class="form-group">
+                    <input type="password" id="confirmPassword" placeholder="Confirm Password" required>
+                </div>
+                <button type="submit" class="auth-btn">Sign Up</button>
+            </form>
+
+            <!-- OTP Verification Section (Hidden by default) -->
+            <div id="otpSection" style="display: none; margin-top: 1rem;">
+                <h3>Verify Email</h3>
+                <p>Enter the code sent to your email.</p>
+                <form class="auth-form" id="otpForm">
+                    <div class="form-group">
+                        <input type="text" id="otpInput" placeholder="Enter 6-digit OTP" required>
+                    </div>
+                    <button type="submit" class="auth-btn">Verify Code</button>
+                </form>
+            </div>
+            <div class="auth-footer">
+                <p>Already have an account? <a href="login.html">Log In</a></p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-bottom">
+            <p>© 2025 Leak Check. All rights reserved.</p>
+        </div>
+    </footer>
+    <script src="auth.js"></script>
+</body>
+
+</html>
