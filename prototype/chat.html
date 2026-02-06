@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Leak Check | Chat</title>
+    <link rel="stylesheet" href="style.css" />
+    <script defer src="chat.js"></script>
+</head>
+
+<body>
+
+    <!-- Navbar -->
+    <nav>
+        <div class="logo">Leak<span>Check</span></div>
+        <ul>
+            <li><a href="index.html">Home</a></li>
+            <li><a href="index.html#features">Features</a></li>
+            <li><a href="index.html#about">About</a></li>
+            <li><a href="index.html#contact">Contact</a></li>
+            <li><a href="chat.html" class="active">Chat</a></li>
+        </ul>
+    </nav>
+
+    <!-- Chat Section -->
+    <section class="chat-section">
+        <div class="chat-container">
+            <!-- Sidebar -->
+            <aside class="chat-sidebar">
+                <button id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
+                <div class="session-list" id="session-list">
+                    <!-- Session items will be injected here -->
+                </div>
+            </aside>
+
+            <!-- Main Chat Area -->
+            <main class="chat-main">
+                <div class="chat-header">
+                    <h2>Try LeakCheck Chat</h2>
+                    <select id="modelSelect">
+                        <option value="gemini">Google Gemini</option>
+                        <option value="openai">OpenAI Model</option>
+                        <option value="anthropic">Anthropic Claude</option>
+                        <option value="huggingface">Hugging Face</option>
+                    </select>
+                </div>
+
+                <div class="chat-box" id="chat-box">
+                    <div class="bot-message">
+                        👋 Hi there! I’m LeakCheck’s AI test bot. Start a new chat or select one from the history!
+                    </div>
+                </div>
+
+                <div class="chat-input">
+                    <input type="text" id="user-input" placeholder="Type your message..." />
+                    <button id="send-btn">Send</button>
+                </div>
+            </main>
+        </div>
+
+        <section class="report-section" id="report-section">
+            <div class="report-container">
+                <h2>Leakage Risk Report</h2>
+                <div class="report-score">
+                    <div class="risk-gauge">
+                        <svg class="gauge" viewBox="0 0 120 120">
+                            <circle class="gauge-bg" cx="60" cy="60" r="50"></circle>
+                            <circle class="gauge-progress" cx="60" cy="60" r="50"></circle>
+                            <text class="gauge-text" x="50%" y="55%" text-anchor="middle">0%</text>
+                        </svg>
+                    </div>
+                    <div class="score-details">
+                        <span>Risk Score:</span> <strong id="risk-score">--</strong><br>
+                        <span>Severity:</span> <strong id="risk-level">--</strong>
+                    </div>
+                </div>
+
+                <div class="report-severity">
+                    <span>Severity:</span> <strong id="risk-level">--</strong>
+                </div>
+                <div class="report-details" id="report-details">
+                    <p>No analysis yet. Run a test by chatting.</p>
+                </div>
+                <button id="download-report">Download Report</button>
+            </div>
+        </section>
+
+
+
+    </section>
+
+</body>
+
+</html>
