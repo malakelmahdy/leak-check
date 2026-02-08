@@ -4,8 +4,14 @@ import cors from "cors";
 import https from "https";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import { detectLeakage } from "./analysis/leakageDetector.js";
+import { detectPromptInjection } from "./analysis/promptInjectionDetector.js";
+import { detectJailbreak } from "./analysis/jailbreakDetector.js";
+import { loadDatasets, getRandomAttack } from "./attack-generator/csvLoader.js";
+import { mutateAttack, generateVariants } from "./attack-generator/mutationEngine.js";
 
 import "dotenv/config"; // Load env vars
 
@@ -48,9 +54,20 @@ async function setupTransporter() {
 setupTransporter();
 import { calculateRisk } from "./analysis/riskScorer.js";
 
+// Load attack datasets on startup (async)
+(async () => {
+    await loadDatasets();
+})();
+
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// Serve static files (HTML, CSS, JS, etc.)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+console.log('📁 Serving static files from:', __dirname);
+app.use(express.static(__dirname));
 
 // =====================
 // Firebase Configuration
@@ -89,7 +106,7 @@ app.post("/signup", async (req, res) => {
         const checkRes = await fetch(`${FIREBASE_DB_URL}/users.json`);
         let users = {};
         if (checkRes.ok) users = await checkRes.json() || {};
-        
+
         const userExists = Object.values(users).some(u => u.email === email);
         if (userExists) {
             return res.status(400).json({ error: "User already exists." });
@@ -101,7 +118,7 @@ app.post("/signup", async (req, res) => {
         // 3. Store pending registration
         // Use hashed email as key to handle special chars
         const pendingKey = crypto.createHash('md5').update(email).digest('hex');
-        
+
         const pendingUser = {
             full_name: name,
             email: email,
@@ -137,8 +154,10 @@ app.post("/signup", async (req, res) => {
             console.log("⚠️ Transporter not ready. OTP:", otp);
         }
 
-        res.status(200).json({ message: "OTP sent to your email.", preview: nodemailer.getTestMessageUrl 
-            ? "Check server console for Ethereal URL" : null });
+        res.status(200).json({
+            message: "OTP sent to your email.", preview: nodemailer.getTestMessageUrl
+                ? "Check server console for Ethereal URL" : null
+        });
 
     } catch (error) {
         console.error("Signup Error:", error);
@@ -156,7 +175,7 @@ app.post("/verify-otp", async (req, res) => {
 
     try {
         const pendingKey = crypto.createHash('md5').update(email).digest('hex');
-        
+
         // 1. Fetch pending registration
         const pendingRes = await fetch(`${FIREBASE_DB_URL}/pending_registrations/${pendingKey}.json`);
         const pendingUser = await pendingRes.json();
@@ -186,7 +205,7 @@ app.post("/verify-otp", async (req, res) => {
             nextId = maxId + 1;
         }
 
-        const newUser = { 
+        const newUser = {
             user_id: nextId,
             full_name: pendingUser.full_name,
             email: pendingUser.email,
@@ -257,36 +276,93 @@ app.post("/login", async (req, res) => {
 // Chat Endpoint
 // =====================
 // =====================
-// Chat Endpoint (Session-based)
+// Chat Endpoint (Session-based) - Supports Gemini and Llama
 // =====================
 app.post("/chat", async (req, res) => {
-    let { message, userId, sessionId } = req.body;
+    let { message, userId, sessionId, model = "llama" } = req.body;
 
     if (!message) {
         return res.status(400).json({ error: "Message is required." });
     }
 
     try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                contents: [{ parts: [{ text: message }] }],
-            }),
-            agent,
-        });
+        let modelReply;
 
-        const data = await response.json();
-
-        if (!data.candidates || data.candidates.length === 0) {
-            console.error("Gemini API error:", data);
-            return res.status(500).json({
-                error: data.error?.message || "No response from Gemini.",
+        // Choose model endpoint
+        if (model === "llama") {
+            // Call local Llama server (must be running on port 8080)
+            const llamaResponse = await fetch("http://127.0.0.1:8080/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    messages: [
+                        {
+                            role: "system",
+                            content: "You are a helpful AI assistant. Respond naturally in plain text. Do not use JSON format or function calling. Answer user questions directly and conversationally."
+                        },
+                        {
+                            role: "user",
+                            content: message
+                        }
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 512
+                })
             });
+
+            if (!llamaResponse.ok) {
+                throw new Error(`Llama server error: ${llamaResponse.status}`);
+            }
+
+            const llamaData = await llamaResponse.json();
+
+            // Parse Llama response - handle both function calling and normal format
+            let rawResponse = llamaData.choices[0].message.content;
+
+            // If response is JSON function call, extract the actual text
+            try {
+                const parsed = JSON.parse(rawResponse);
+                if (parsed.name && parsed.parameters) {
+                    // Extract text from function call parameters
+                    modelReply = parsed.parameters.s || parsed.parameters.text || JSON.stringify(parsed.parameters);
+                } else {
+                    modelReply = rawResponse;
+                }
+            } catch (e) {
+                // Not JSON, use as-is (normal text response)
+                modelReply = rawResponse;
+            }
+
+        } else {
+            // Use Gemini
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: message }] }],
+                }),
+                agent,
+            });
+
+            const data = await response.json();
+
+            if (!data.candidates || data.candidates.length === 0) {
+                console.error("Gemini API error:", data);
+                return res.status(500).json({
+                    error: data.error?.message || "No response from Gemini.",
+                });
+            }
+
+            modelReply = data.candidates[0].content.parts[0].text;
         }
 
-        const modelReply = data.candidates[0].content.parts[0].text;
-        const findings = detectLeakage(modelReply);
+        // Run all 3 detectors (for both Gemini and Llama)
+        const leakageFindings = await detectLeakage(modelReply);
+        const injectionFindings = await detectPromptInjection(message, modelReply);
+        const jailbreakFindings = await detectJailbreak(message, modelReply);
+
+        // Combine all findings
+        const findings = [...leakageFindings, ...injectionFindings, ...jailbreakFindings];
         const risk = calculateRisk(findings);
 
         // =====================
@@ -295,7 +371,7 @@ app.post("/chat", async (req, res) => {
         if (userId) {
             const timestamp = Date.now();
             const dateStr = new Date().toISOString();
-            
+
             // Generate Session ID if new
             if (!sessionId) {
                 sessionId = `${timestamp}_${Math.random().toString(36).substr(2, 9)}`;
@@ -353,9 +429,9 @@ app.post("/chat", async (req, res) => {
             sessionId // Return the session ID so frontend can update state
         });
     } catch (error) {
-        console.error("Error contacting Gemini:", error);
+        console.error("Chat endpoint error:", error);
         res.status(500).json({
-            error: "Failed to contact Gemini API.",
+            error: `Failed to process chat: ${error.message}`,
         });
     }
 });
@@ -369,14 +445,14 @@ app.get("/sessions/:userId", async (req, res) => {
         // but since we nested metadata INSIDE the session node along with messages, we might fetch too much data.
         // BETTER: Fetch `chats/{userId}/sessions` but utilize shallow=true if using REST API to get keys? 
         // OR: Just fetch all and map. For a prototype with small history it's fine.
-        
+
         // Actually, let's just fetch everything and process server-side or restructure.
         // Restructuring `chats/{userId}/metadata` separately from `chats/{userId}/messages` is better but let's stick to what we built:
         // `chats/{userId}/sessions/{sessionId}/metadata`
-        
+
         const response = await fetch(`${FIREBASE_DB_URL}/chats/${userId}/sessions.json`); // Fetch all sessions
         const data = await response.json();
-        
+
         if (!data) return res.json([]);
 
         // Extract metadata from each session
@@ -396,7 +472,7 @@ app.get("/history/:userId/:sessionId", async (req, res) => {
     try {
         const response = await fetch(`${FIREBASE_DB_URL}/chats/${userId}/sessions/${sessionId}/messages.json`);
         const data = await response.json();
-        
+
         if (!data) return res.json([]);
 
         const history = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
@@ -404,6 +480,42 @@ app.get("/history/:userId/:sessionId", async (req, res) => {
     } catch (error) {
         console.error("History Error:", error);
         res.status(500).json({ error: "Failed to fetch history." });
+    }
+});
+
+// =====================
+// Attack Generation Endpoint (CSV-based)
+// =====================
+app.post('/generate-attack', (req, res) => {
+    const { category, mutationLevel = 2, generateMultiple = false } = req.body;
+
+    if (!category) {
+        return res.status(400).json({ error: 'Category is required' });
+    }
+
+    try {
+        // Get a random attack from the category
+        const baseAttack = getRandomAttack(category);
+
+        if (!baseAttack) {
+            return res.status(404).json({
+                error: `No attacks found for category: ${category}`
+            });
+        }
+
+        if (generateMultiple) {
+            // Generate multiple variants
+            const variants = generateVariants(baseAttack, 3, mutationLevel);
+            res.json({ variants });
+        } else {
+            // Generate single mutated attack
+            const mutated = mutateAttack(baseAttack, mutationLevel);
+            res.json({ attack: mutated });
+        }
+
+    } catch (error) {
+        console.error('Attack generation error:', error);
+        res.status(500).json({ error: 'Failed to generate attack' });
     }
 });
 
