@@ -1,122 +1,13 @@
 const chatBox = document.querySelector(".chat-box");
 const inputField = document.querySelector("#user-input");
 const sendButton = document.querySelector("#send-btn");
-const modelSelector = document.getElementById("modelSelect");
-const reportSection = document.getElementById("report-section");
+let currentSessionId = null;
 
-// API Key Management UI
-const apiKeyModal = document.createElement("div");
-apiKeyModal.innerHTML = `
-    <div id="apiKeyModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); 
-        background:#1f2833; padding:2rem; border-radius:12px; z-index:2000; box-shadow:0 0 30px rgba(0,0,0,0.8);">
-        <h3 style="color:#66fcf1; margin-bottom:1rem;">Configure API Keys</h3>
-        <div style="margin-bottom:1rem;">
-            <label style="color:#c5c6c7;">OpenAI Key:</label>
-            <input type="password" id="openaiKey" style="width:100%; padding:0.5rem; margin-top:0.5rem; 
-                background:#0b0c10; border:1px solid #45a29e; color:#fff; border-radius:6px;">
-        </div>
-        <div style="margin-bottom:1rem;">
-            <label style="color:#c5c6c7;">Anthropic Key:</label>
-            <input type="password" id="anthropicKey" style="width:100%; padding:0.5rem; margin-top:0.5rem; 
-                background:#0b0c10; border:1px solid #45a29e; color:#fff; border-radius:6px;">
-        </div>
-        <button onclick="saveApiKeys()" style="background:#66fcf1; color:#0b0c10; padding:0.5rem 1rem; 
-            border:none; border-radius:6px; cursor:pointer; margin-right:0.5rem;">Save</button>
-        <button onclick="closeApiKeyModal()" style="background:#e74c3c; color:#fff; padding:0.5rem 1rem; 
-            border:none; border-radius:6px; cursor:pointer;">Cancel</button>
-    </div>
-    <div id="modalOverlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; 
-        background:rgba(0,0,0,0.7); z-index:1999;"></div>
-`;
-document.body.appendChild(apiKeyModal);
-
-// Load keys from localStorage
-let apiKeys = JSON.parse(localStorage.getItem("leakcheck_keys") || "{}");
-let currentProvider = "gemini";
-let currentModel = "models/gemini-2.5-flash";
-
-// Provider configuration (from /providers endpoint)
-let providers = {
-    gemini: { name: "Google Gemini", requiresKey: false, models: ["models/gemini-2.5-flash"] },
-    openai: { name: "OpenAI", requiresKey: true, models: ["gpt-3.5-turbo", "gpt-4"] },
-    anthropic: { name: "Anthropic", requiresKey: true, models: ["claude-3-5-sonnet-20241022"] },
-};
-
-// Initialize
-async function initializeApp() {
-    await loadProviders();
-    loadApiKeys();
-    setupModelSelector();
-}
-
-async function loadProviders() {
-    try {
-        const res = await fetch("http://localhost:3000/providers");
-        const data = await res.json();
-        providers = data.providers.reduce((acc, p) => {
-            acc[p.id] = p;
-            return acc;
-        }, {});
-    } catch (error) {
-        console.error("Failed to load providers:", error);
-    }
-}
-
-function loadApiKeys() {
-    // Load saved keys
-    document.getElementById("openaiKey").value = apiKeys.openai || "";
-    document.getElementById("anthropicKey").value = apiKeys.anthropic || "";
-}
-
-function saveApiKeys() {
-    apiKeys = {
-        openai: document.getElementById("openaiKey").value.trim(),
-        anthropic: document.getElementById("anthropicKey").value.trim(),
-    };
-    localStorage.setItem("leakcheck_keys", JSON.stringify(apiKeys));
-    closeApiKeyModal();
-    alert("API keys saved securely in browser!");
-}
-
-function openApiKeyModal() {
-    document.getElementById("apiKeyModal").style.display = "block";
-    document.getElementById("modalOverlay").style.display = "block";
-}
-
-function closeApiKeyModal() {
-    document.getElementById("apiKeyModal").style.display = "none";
-    document.getElementById("modalOverlay").style.display = "none";
-}
-
-function setupModelSelector() {
-    // Update model options when provider changes
-    modelSelector.addEventListener("change", (e) => {
-        const selected = e.target.value.split(":");
-        currentProvider = selected[0];
-        currentModel = selected[1];
-
-        // Show/hide API key indicator
-        updateApiKeyIndicator();
-    });
-
-    updateApiKeyIndicator();
-}
-
-function updateApiKeyIndicator() {
-    const provider = providers[currentProvider];
-    const hasKey = !provider?.requiresKey || (apiKeys[currentProvider] && apiKeys[currentProvider].length > 0);
-
-    // Add key indicator to UI
-    let indicator = document.getElementById("keyIndicator");
-    if (!indicator) {
-        indicator = document.createElement("span");
-        indicator.id = "keyIndicator";
-        indicator.style.cssText = "margin-left:1rem; font-size:0.85rem; cursor:pointer;";
-        document.querySelector(".chat-header").appendChild(indicator);
-    }
-
-    indicator.innerHTML = hasKey ? `✅ ${provider.name} Ready` : `❌ ${provider.name} API Key Needed`;
-    indicator.onclick = provider.requiresKey ? openApiKeyModal : null;
+// =====================
+// Chat Message Helpers
+// =====================
+function clearChat() {
+    chatBox.innerHTML = '';
 }
 
 function addMessage(message, sender) {
@@ -127,157 +18,338 @@ function addMessage(message, sender) {
     chatBox.scrollTop = chatBox.scrollHeight;
 }
 
-function generateReport(analysis) {
-    const riskScore = analysis.riskScore || 0;
-    const severity = analysis.severity || "Low";
-    const detectedTypes = analysis.detectedTypes || [];
+function typeMessage(text, sender) {
+    const msgDiv = document.createElement("div");
+    msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
+    chatBox.appendChild(msgDiv);
 
-    document.getElementById("risk-score").textContent = `${riskScore}/100`;
-    document.getElementById("risk-level").textContent = severity;
+    let index = 0;
+    const typingSpeed = 30;
 
-    const detailsHtml = `
-        <ul>
-            ${detectedTypes.length > 0 ? detectedTypes.map((type) => `<li>⚠️ Potential ${type.replace("_", " ")} detected</li>`).join("") : "<li>✅ No sensitive data leaked</li>"}
-        </ul>
-        <p><strong>Provider:</strong> ${providers[currentProvider]?.name || currentProvider}</p>
-        <p><strong>Model:</strong> ${analysis.model || currentModel}</p>
-        <p><strong>Recommendations:</strong> ${detectedTypes.length > 0 ? "Review model prompts and implement stricter filters" : "No immediate action required"}</p>
-    `;
-
-    document.getElementById("report-details").innerHTML = detailsHtml;
-
-    // Animate gauge
-    const gaugeCircle = document.querySelector(".gauge-progress");
-    const gaugeText = document.querySelector(".gauge-text");
-    const circumference = 314;
-    const offset = circumference - (riskScore / 100) * circumference;
-    gaugeCircle.style.strokeDashoffset = offset;
-
-    const color = severity === "High" ? "#e74c3c" : severity === "Medium" ? "#f1c40f" : "#45a29e";
-    gaugeCircle.style.stroke = color;
-    gaugeText.style.fill = color;
-
-    let current = 0;
-    const interval = setInterval(() => {
-        current++;
-        gaugeText.textContent = `${current}%`;
-        if (current >= riskScore) clearInterval(interval);
-    }, 15);
-
-    reportSection.style.display = "block";
+    const typeInterval = setInterval(() => {
+        msgDiv.textContent += text.charAt(index);
+        index++;
+        chatBox.scrollTop = chatBox.scrollHeight;
+        if (index === text.length) clearInterval(typeInterval);
+    }, typingSpeed);
 }
 
-async function sendMessage(userMessage) {
+// =====================
+// Main Chat Logic
+// =====================
+async function simulateBotResponse(userMessage) {
+    const selectedModel = document.getElementById("modelSelect").value;
+
+    // Typing indicator
     const botTyping = document.createElement("div");
     botTyping.classList.add("bot-message", "typing");
     botTyping.textContent = "•••";
     chatBox.appendChild(botTyping);
     chatBox.scrollTop = chatBox.scrollHeight;
 
-    // Check for API key if required
-    const provider = providers[currentProvider];
-    if (provider?.requiresKey && !apiKeys[currentProvider]) {
-        botTyping.remove();
-        addMessage(`⚠️ API key required for ${provider.name}. Click the key indicator above to configure.`, "bot");
-        return;
-    }
 
     try {
+        // Get user from local storage
+        const userStr = localStorage.getItem("user");
+        const user = userStr ? JSON.parse(userStr) : null;
+
+        // Get selected model
+        const modelSelect = document.getElementById("modelSelect");
+        const selectedModel = modelSelect ? modelSelect.value : "gemini";
+
+        const payload = {
+            message: userMessage,
+            userId: user ? user.user_id : null,
+            sessionId: currentSessionId, // Send current session ID
+            model: selectedModel // Send selected model
+        };
+
+
         const res = await fetch("http://localhost:3000/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                message: userMessage,
-                provider: currentProvider,
-                apiKey: apiKeys[currentProvider] || null,
-                model: currentModel,
-            }),
+            body: JSON.stringify(payload),
         });
 
         const data = await res.json();
         botTyping.remove();
 
+        // 🔴 Backend / API error handling
         if (data.error) {
-            addMessage(`⚠️ Error: ${data.error}`, "bot");
-        } else {
-            addMessage(data.reply, "bot");
-            generateReport({
-                riskScore: data.riskScore,
-                severity: data.severity,
-                detectedTypes: data.detectedTypes,
-                model: data.model,
-            });
+            typeMessage("⚠️ " + data.error, "bot");
+            return;
+        }
+
+        // Update Session ID if created/changed
+        if (data.sessionId && data.sessionId !== currentSessionId) {
+            currentSessionId = data.sessionId;
+            loadSessionList(); // Refresh sidebar to show new chat
+        }
+
+        // Normal response
+        typeMessage(data.reply, "bot");
+
+        // ✅ Update report ONLY if backend analysis exists
+        if (data.findings && data.risk) {
+            updateLeakageReport(data.findings, data.risk);
         }
     } catch (error) {
         botTyping.remove();
-        addMessage(`⚠️ Network error: ${error.message}`, "bot");
+        typeMessage("⚠️ Gemini API error: " + error.message, "bot");
     }
 }
 
-// Event Listeners
+// =====================
+// Session Management
+// =====================
+async function loadSessionList() {
+    const userStr = localStorage.getItem("user");
+    if (!userStr) return;
+    const user = JSON.parse(userStr);
+    const listContainer = document.getElementById("session-list");
+
+    try {
+        const res = await fetch(`http://localhost:3000/sessions/${user.user_id}`);
+        const sessions = await res.json();
+
+        listContainer.innerHTML = ""; // Clear list
+
+        if (sessions.length === 0) {
+            listContainer.innerHTML = "<div style='padding:1rem; opacity:0.6; font-size:0.8rem'>No chats yet</div>";
+            return;
+        }
+
+        sessions.forEach(session => {
+            const item = document.createElement("div");
+            item.className = `session-item ${session.id === currentSessionId ? 'active' : ''}`;
+            item.textContent = session.title || "Untitled Chat";
+            item.onclick = () => loadSession(session.id);
+            listContainer.appendChild(item);
+        });
+
+    } catch (error) {
+        console.error("Failed to load sessions:", error);
+    }
+}
+
+async function loadSession(sessionId) {
+    const userStr = localStorage.getItem("user");
+    if (!userStr) return;
+    const user = JSON.parse(userStr);
+
+    currentSessionId = sessionId;
+    clearChat();
+    // Update active state in sidebar
+    loadSessionList();
+    addMessage("Loading conversation...", "bot");
+
+    try {
+        const res = await fetch(`http://localhost:3000/history/${user.user_id}/${sessionId}`);
+        const history = await res.json();
+
+        clearChat(); // Clear "Loading..."
+
+        if (history.length === 0) {
+            addMessage("Start chatting!", "bot");
+        }
+
+        history.forEach(msg => {
+            const sender = msg.role === "user" ? "user" : "bot";
+            addMessage(msg.content, sender);
+
+            if (msg.findings && msg.risk) {
+                updateLeakageReport(msg.findings, msg.risk);
+            }
+        });
+
+    } catch (error) {
+        console.error("Failed to load session history:", error);
+    }
+}
+
+function startNewChat() {
+    currentSessionId = null;
+    clearChat();
+    addMessage("👋 Hi there! I’m LeakCheck’s AI test bot. Start a new chat!", "bot");
+    loadSessionList(); // Remove active class from others
+}
+
+// Initialize
+document.addEventListener("DOMContentLoaded", () => {
+    loadSessionList();
+
+    // Wire up New Chat button
+    const newChatBtn = document.getElementById("new-chat-btn");
+    if (newChatBtn) {
+        newChatBtn.addEventListener("click", startNewChat);
+    }
+});
+
+// =====================
+// Leakage Risk Report (DISPLAY ONLY)
+// =====================
+function updateLeakageReport(findings, risk) {
+    // 🛑 Defensive guard (prevents ALL crashes)
+    if (!risk || typeof risk.score !== "number") {
+        console.error("❌ Invalid or missing risk object:", risk);
+        return;
+    }
+
+    const reportDetails = document.getElementById("report-details");
+    const riskScoreEl = document.getElementById("risk-score");
+    const riskLevelEl = document.getElementById("risk-level");
+
+    // No threats case
+    if (!findings || findings.length === 0) {
+        reportDetails.innerHTML = `<p>✅ No security threats detected.</p>`;
+        riskScoreEl.textContent = `${risk.score} / 100`;
+        riskLevelEl.textContent = risk.level;
+        updateGauge(risk.score, risk.level);
+        return;
+    }
+
+    // Categorize findings
+    const categories = {
+        leakage: findings.filter(f => !f.category || !["injection", "manipulation", "extraction", "obfuscation", "dan", "roleplay", "bypass", "hypothetical", "harmful", "jailbreak_success"].includes(f.category)),
+        injection: findings.filter(f => ["injection", "manipulation", "extraction", "obfuscation"].includes(f.category)),
+        jailbreak: findings.filter(f => ["dan", "roleplay", "bypass", "hypothetical", "harmful", "jailbreak_success"].includes(f.category))
+    };
+
+    // Build categorized HTML
+    let findingsHtml = "";
+
+    if (categories.leakage.length > 0) {
+        findingsHtml += `<div class="threat-category"><span class="badge badge-leakage">🔓 DATA LEAKAGE</span>`;
+        findingsHtml += `<ul>${categories.leakage.map(f => `<li><strong>${f.type}</strong> — ${f.severity}</li>`).join("")}</ul></div>`;
+    }
+
+    if (categories.injection.length > 0) {
+        findingsHtml += `<div class="threat-category"><span class="badge badge-injection">⚠️ PROMPT INJECTION</span>`;
+        findingsHtml += `<ul>${categories.injection.map(f => `<li><strong>${f.type}</strong> — ${f.severity}</li>`).join("")}</ul></div>`;
+    }
+
+    if (categories.jailbreak.length > 0) {
+        findingsHtml += `<div class="threat-category"><span class="badge badge-jailbreak">🚨 JAILBREAK ATTEMPT</span>`;
+        findingsHtml += `<ul>${categories.jailbreak.map(f => `<li><strong>${f.type}</strong> — ${f.severity}</li>`).join("")}</ul></div>`;
+    }
+
+    reportDetails.innerHTML = `
+        ${findingsHtml}
+        <p><strong>Recommendation:</strong> ${risk.rationale}</p>
+    `;
+
+    // Display backend-calculated risk
+    riskScoreEl.textContent = `${risk.score} / 100`;
+    riskLevelEl.textContent = risk.level;
+
+    updateGauge(risk.score, risk.level);
+}
+
+
+// =====================
+// Gauge Animation
+// =====================
+function updateGauge(score, level) {
+    const gaugeCircle = document.querySelector(".gauge-progress");
+    const gaugeText = document.querySelector(".gauge-text");
+    const circumference = 314;
+
+    const offset = circumference - (score / 100) * circumference;
+    gaugeCircle.style.strokeDashoffset = offset;
+
+    let color = "#45a29e";
+    if (level === "Medium") color = "#f1c40f";
+    if (level === "High") color = "#e67e22";
+    if (level === "Critical") color = "#e74c3c";
+
+    gaugeCircle.style.stroke = color;
+    gaugeText.style.fill = color;
+
+    let current = 0;
+    const interval = setInterval(() => {
+        gaugeText.textContent = `${current}%`;
+        current++;
+        if (current >= score) clearInterval(interval);
+    }, 15);
+}
+
+// =====================
+// Download Report
+// =====================
+document.getElementById("download-report").addEventListener("click", () => {
+    const reportText = `
+LeakCheck Leakage Risk Report
+-----------------------------
+Risk Score: ${document.getElementById("risk-score").textContent}
+Severity: ${document.getElementById("risk-level").textContent}
+
+Details:
+${document.getElementById("report-details").innerText}
+`;
+
+    const blob = new Blob([reportText], { type: "text/plain" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "LeakCheck_Report.txt";
+    link.click();
+});
+
+// =====================
+// Send Message Handlers
+// =====================
 sendButton.addEventListener("click", () => {
     const userMessage = inputField.value.trim();
     if (!userMessage) return;
 
     addMessage(userMessage, "user");
     inputField.value = "";
-    sendMessage(userMessage);
+    simulateBotResponse(userMessage);
 });
 
 inputField.addEventListener("keypress", (e) => {
-    if (e.key === "Enter") sendButton.click();
+    if (e.key === "Enter") {
+        sendButton.click();
+    }
 });
-
-// Initialize on load
-initializeApp();
 
 // const chatBox = document.querySelector(".chat-box");
 // const inputField = document.querySelector("#user-input");
 // const sendButton = document.querySelector("#send-btn");
-// const modelSelector = document.querySelector("#model-select");
 
+// // =====================
+// // Chat Message Helpers
+// // =====================
 // function addMessage(message, sender) {
-//   const msgDiv = document.createElement("div");
-//   msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
-//   msgDiv.textContent = message;
-//   chatBox.appendChild(msgDiv);
-//   chatBox.scrollTop = chatBox.scrollHeight;
+//     const msgDiv = document.createElement("div");
+//     msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
+//     msgDiv.textContent = message;
+//     chatBox.appendChild(msgDiv);
+//     chatBox.scrollTop = chatBox.scrollHeight;
 // }
 
-// // Simulated bot typing animation
-// // function simulateBotResponse(userMessage) {
-// //   const botTyping = document.createElement("div");
-// //   botTyping.classList.add("bot-message");
-// //   botTyping.textContent = "•••"; // typing dots
-// //   botTyping.classList.add("typing");
-// //   chatBox.appendChild(botTyping);
-// //   chatBox.scrollTop = chatBox.scrollHeight;
+// function typeMessage(text, sender) {
+//     const msgDiv = document.createElement("div");
+//     msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
+//     chatBox.appendChild(msgDiv);
 
-// //   // Simulate delay based on message length
-// //   const delay = Math.min(2000 + userMessage.length * 30, 4000);
+//     let index = 0;
+//     const typingSpeed = 30;
 
-// //   setTimeout(() => {
-// //     botTyping.remove();
+//     const typeInterval = setInterval(() => {
+//         msgDiv.textContent += text.charAt(index);
+//         index++;
+//         chatBox.scrollTop = chatBox.scrollHeight;
+//         if (index === text.length) clearInterval(typeInterval);
+//     }, typingSpeed);
+// }
 
-// //     // Dummy bot responses (replace later with API calls)
-// //     const responses = [
-// //       "Interesting point! Let me think about that...",
-// //       "That’s a valid concern. Here’s what I found...",
-// //       "Based on my analysis, here’s what might be happening...",
-// //       "Good question! It could depend on the model’s configuration.",
-// //       "This model seems more resilient to prompt injections than others.",
-// //     ];
-
-// //     const reply =
-// //       responses[Math.floor(Math.random() * responses.length)];
-
-// //     typeMessage(reply, "bot");
-// //   }, delay);
-// // }
+// // =====================
+// // Main Chat Logic
+// // =====================
 // async function simulateBotResponse(userMessage) {
 //     const selectedModel = document.getElementById("modelSelect").value;
 
-//     // Show typing dots
+//     // Typing indicator
 //     const botTyping = document.createElement("div");
 //     botTyping.classList.add("bot-message", "typing");
 //     botTyping.textContent = "•••";
@@ -286,142 +358,101 @@ initializeApp();
 
 //     if (selectedModel === "gemini") {
 //         try {
-//            const res = await fetch("http://localhost:3000/chat", {
-//                method: "POST",
-//                headers: { "Content-Type": "application/json" },
-//                body: JSON.stringify({ message: userMessage }),
-//            });
+//             const res = await fetch("http://localhost:3000/chat", {
+//                 method: "POST",
+//                 headers: { "Content-Type": "application/json" },
+//                 body: JSON.stringify({ message: userMessage }),
+//             });
 
 //             const data = await res.json();
 //             botTyping.remove();
+
 //             typeMessage(data.reply, "bot");
+
+//             // 🔍 Update Leakage Risk Report with BACKEND results
+//             updateLeakageReport(data.findings, data.risk);
 //         } catch (error) {
 //             botTyping.remove();
 //             typeMessage("⚠️ Gemini API error: " + error.message, "bot");
 //         }
 //     } else {
 //         botTyping.remove();
-//         const responses = ["Simulated model reply...", "This is a placeholder response for non-Gemini models."];
-//         const reply = responses[Math.floor(Math.random() * responses.length)];
-//         typeMessage(reply, "bot");
+//         typeMessage("This is a placeholder response for non-Gemini models.", "bot");
 //     }
 // }
 
-// // === Simulate Risk Report after chatting ===
+// // =====================
+// // Leakage Risk Report (DISPLAY ONLY)
+// // =====================
+// function updateLeakageReport(findings, risk) {
+//     const reportDetails = document.getElementById("report-details");
+//     const riskScoreEl = document.getElementById("risk-score");
+//     const riskLevelEl = document.getElementById("risk-level");
 
-// function generateReport() {
-//     // Simulated random data
-//     const riskScore = Math.floor(Math.random() * 100);
-//     let severity = "Low";
-//     if (riskScore > 75) severity = "Critical";
-//     else if (riskScore > 50) severity = "High";
-//     else if (riskScore > 25) severity = "Medium";
+//     // No leakage
+//     if (!findings || findings.length === 0) {
+//         reportDetails.innerHTML = `<p>✅ No privacy leakage detected.</p>`;
+//         riskScoreEl.textContent = `${risk.score} / 100`;
+//         riskLevelEl.textContent = risk.level;
+//         updateGauge(risk.score, risk.level);
+//         return;
+//     }
 
-//     const issues = ["Potential prompt injection detected.", "Sensitive data pattern matched in response.", "Weak input sanitization found.", "No major leaks detected."];
+//     // Display findings
+//     const findingsHtml = findings.map((f) => `<li><strong>${f.type}</strong> — Severity: ${f.severity}</li>`).join("");
 
-//     const randomIssues = issues.sort(() => 0.5 - Math.random()).slice(0, 2);
+//     reportDetails.innerHTML = `
+//         <ul>${findingsHtml}</ul>
+//         <p><strong>Recommendation:</strong> Review prompts and apply output filtering.</p>
+//     `;
 
-//     // Update text values
-//     document.getElementById("risk-score").textContent = `${riskScore}/100`;
-//     document.getElementById("risk-level").textContent = severity;
-//     document.getElementById("report-details").innerHTML = `
-//     <ul>
-//       ${randomIssues.map((issue) => `<li>${issue}</li>`).join("")}
-//     </ul>
-//     <p><strong>Recommendations:</strong> Review model prompts, apply stricter filters, and use contextual grounding.</p>
-//   `;
+//     // Display backend-calculated risk
+//     riskScoreEl.textContent = `${risk.score} / 100`;
+//     riskLevelEl.textContent = risk.level;
 
-//     // Animate circular gauge
+//     updateGauge(risk.score, risk.level);
+// }
+
+// // =====================
+// // Gauge Animation
+// // =====================
+// function updateGauge(score, level) {
 //     const gaugeCircle = document.querySelector(".gauge-progress");
 //     const gaugeText = document.querySelector(".gauge-text");
 //     const circumference = 314;
-//     const offset = circumference - (riskScore / 100) * circumference;
+
+//     const offset = circumference - (score / 100) * circumference;
 //     gaugeCircle.style.strokeDashoffset = offset;
 
-//     // Change color based on severity
 //     let color = "#45a29e";
-//     if (severity === "Medium") color = "#f1c40f";
-//     if (severity === "High") color = "#e67e22";
-//     if (severity === "Critical") color = "#e74c3c";
+//     if (level === "Medium") color = "#f1c40f";
+//     if (level === "High") color = "#e67e22";
+//     if (level === "Critical") color = "#e74c3c";
+
 //     gaugeCircle.style.stroke = color;
 //     gaugeText.style.fill = color;
 
-//     // Animate text count-up
 //     let current = 0;
 //     const interval = setInterval(() => {
-//         current++;
 //         gaugeText.textContent = `${current}%`;
-//         if (current >= riskScore) clearInterval(interval);
+//         current++;
+//         if (current >= score) clearInterval(interval);
 //     }, 15);
 // }
-// // function generateReport() {
-// //     const loader = document.getElementById("report-loader");
-// //     const reportContent = document.getElementById("report-content");
 
-// //     // Hide old report and show loader
-// //     reportContent.classList.add("hidden");
-// //     loader.classList.remove("hidden");
-
-// //     // Simulate processing delay (like a real scan)
-// //     setTimeout(() => {
-// //         loader.classList.add("hidden");
-// //         reportContent.classList.remove("hidden");
-
-// //         // Simulated random data
-// //         const riskScore = Math.floor(Math.random() * 100);
-// //         let severity = "Low";
-// //         if (riskScore > 75) severity = "Critical";
-// //         else if (riskScore > 50) severity = "High";
-// //         else if (riskScore > 25) severity = "Medium";
-
-// //         const issues = ["Potential prompt injection detected.", "Sensitive data pattern matched in response.", "Weak input sanitization found.", "No major leaks detected."];
-
-// //         const randomIssues = issues.sort(() => 0.5 - Math.random()).slice(0, 2);
-
-// //         // Update text values
-// //         document.getElementById("risk-score").textContent = `${riskScore}/100`;
-// //         document.getElementById("risk-level").textContent = severity;
-// //         document.getElementById("report-details").innerHTML = `
-// //       <ul>
-// //         ${randomIssues.map((issue) => `<li>${issue}</li>`).join("")}
-// //       </ul>
-// //       <p><strong>Recommendations:</strong> Review model prompts, apply stricter filters, and use contextual grounding.</p>
-// //     `;
-
-// //         // Animate circular gauge
-// //         const gaugeCircle = document.querySelector(".gauge-progress");
-// //         const gaugeText = document.querySelector(".gauge-text");
-// //         const circumference = 314;
-// //         const offset = circumference - (riskScore / 100) * circumference;
-// //         gaugeCircle.style.strokeDashoffset = offset;
-
-// //         // Change color based on severity
-// //         let color = "#45a29e";
-// //         if (severity === "Medium") color = "#f1c40f";
-// //         if (severity === "High") color = "#e67e22";
-// //         if (severity === "Critical") color = "#e74c3c";
-// //         gaugeCircle.style.stroke = color;
-// //         gaugeText.style.fill = color;
-
-// //         // Animate text count-up
-// //         let current = 0;
-// //         const interval = setInterval(() => {
-// //             current++;
-// //             gaugeText.textContent = `${current}%`;
-// //             if (current >= riskScore) clearInterval(interval);
-// //         }, 15);
-// //     }, 2000); // Simulated delay (2 seconds)
-// // }
-
+// // =====================
+// // Download Report
+// // =====================
 // document.getElementById("download-report").addEventListener("click", () => {
 //     const reportText = `
 // LeakCheck Leakage Risk Report
 // -----------------------------
 // Risk Score: ${document.getElementById("risk-score").textContent}
 // Severity: ${document.getElementById("risk-level").textContent}
+
 // Details:
 // ${document.getElementById("report-details").innerText}
-//   `;
+// `;
 
 //     const blob = new Blob([reportText], { type: "text/plain" });
 //     const link = document.createElement("a");
@@ -430,45 +461,202 @@ initializeApp();
 //     link.click();
 // });
 
-// // Call after each chat exchange
+// // =====================
+// // Send Message Handlers
+// // =====================
 // sendButton.addEventListener("click", () => {
-//   const userMessage = inputField.value.trim();
-//   if (!userMessage) return;
-//   addMessage(userMessage, "user");
-//   inputField.value = "";
-//   simulateBotResponse(userMessage);
-//   setTimeout(generateReport, 4000); // generate after response
+//     const userMessage = inputField.value.trim();
+//     if (!userMessage) return;
+
+//     addMessage(userMessage, "user");
+//     inputField.value = "";
+//     simulateBotResponse(userMessage);
 // });
 
-// // Typing effect for the bot
-// function typeMessage(text, sender) {
-//   const msgDiv = document.createElement("div");
-//   msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
-//   chatBox.appendChild(msgDiv);
+// inputField.addEventListener("keypress", (e) => {
+//     if (e.key === "Enter") {
+//         sendButton.click();
+//     }
+// });
 
-//   let index = 0;
-//   const typingSpeed = 30;
+// const chatBox = document.querySelector(".chat-box");
+// const inputField = document.querySelector("#user-input");
+// const sendButton = document.querySelector("#send-btn");
 
-//   const typeInterval = setInterval(() => {
-//     msgDiv.textContent += text.charAt(index);
-//     index++;
+// // =====================
+// // Chat Message Helpers
+// // =====================
+// function addMessage(message, sender) {
+//     const msgDiv = document.createElement("div");
+//     msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
+//     msgDiv.textContent = message;
+//     chatBox.appendChild(msgDiv);
 //     chatBox.scrollTop = chatBox.scrollHeight;
-//     if (index === text.length) clearInterval(typeInterval);
-//   }, typingSpeed);
 // }
 
-// // Handle send message
-// sendButton.addEventListener("click", () => {
-//   const userMessage = inputField.value.trim();
-//   if (!userMessage) return;
-//   addMessage(userMessage, "user");
-//   inputField.value = "";
-//   simulateBotResponse(userMessage);
+// function typeMessage(text, sender) {
+//     const msgDiv = document.createElement("div");
+//     msgDiv.classList.add(sender === "user" ? "user-message" : "bot-message");
+//     chatBox.appendChild(msgDiv);
+
+//     let index = 0;
+//     const typingSpeed = 30;
+
+//     const typeInterval = setInterval(() => {
+//         msgDiv.textContent += text.charAt(index);
+//         index++;
+//         chatBox.scrollTop = chatBox.scrollHeight;
+//         if (index === text.length) clearInterval(typeInterval);
+//     }, typingSpeed);
+// }
+
+// // =====================
+// // Main Chat Logic
+// // =====================
+// async function simulateBotResponse(userMessage) {
+//     const selectedModel = document.getElementById("modelSelect").value;
+
+//     // Typing indicator
+//     const botTyping = document.createElement("div");
+//     botTyping.classList.add("bot-message", "typing");
+//     botTyping.textContent = "•••";
+//     chatBox.appendChild(botTyping);
+//     chatBox.scrollTop = chatBox.scrollHeight;
+
+//     if (selectedModel === "gemini") {
+//         try {
+//             const res = await fetch("http://localhost:3000/chat", {
+//                 method: "POST",
+//                 headers: { "Content-Type": "application/json" },
+//                 body: JSON.stringify({ message: userMessage }),
+//             });
+
+//             const data = await res.json();
+//             botTyping.remove();
+
+//             typeMessage(data.reply, "bot");
+
+//             // 🔍 Update Leakage Risk Report with REAL findings
+//             updateLeakageReport(data.findings);
+//         } catch (error) {
+//             botTyping.remove();
+//             typeMessage("⚠️ Gemini API error: " + error.message, "bot");
+//         }
+//     } else {
+//         botTyping.remove();
+//         typeMessage("This is a placeholder response for non-Gemini models.", "bot");
+//     }
+// }
+
+// // =====================
+// // Leakage Risk Report
+// // =====================
+// function updateLeakageReport(findings) {
+//     const reportDetails = document.getElementById("report-details");
+//     const riskScoreEl = document.getElementById("risk-score");
+//     const riskLevelEl = document.getElementById("risk-level");
+
+//     // No leakage
+//     if (!findings || findings.length === 0) {
+//         reportDetails.innerHTML = `<p>✅ No privacy leakage detected.</p>`;
+//         riskScoreEl.textContent = "5 / 100";
+//         riskLevelEl.textContent = "Low";
+//         updateGauge(5, "Low");
+//         return;
+//     }
+
+//     // Display findings
+//     const findingsHtml = findings.map((f) => `<li><strong>${f.type}</strong> — Severity: ${f.severity}</li>`).join("");
+
+//     reportDetails.innerHTML = `
+//     <ul>${findingsHtml}</ul>
+//     <p><strong>Recommendation:</strong> Review prompts and apply output filtering.</p>
+//   `;
+
+//     // Deterministic risk scoring
+//     let score = 0;
+//     findings.forEach((f) => {
+//         if (f.severity === "Critical") score += 40;
+//         if (f.severity === "High") score += 30;
+//         if (f.severity === "Medium") score += 20;
+//         if (f.severity === "Low") score += 10;
+//     });
+
+//     score = Math.min(score, 100);
+
+//     let level = "Low";
+//     if (score > 75) level = "Critical";
+//     else if (score > 50) level = "High";
+//     else if (score > 25) level = "Medium";
+
+//     riskScoreEl.textContent = `${score} / 100`;
+//     riskLevelEl.textContent = level;
+
+//     updateGauge(score, level);
+// }
+
+// // =====================
+// // Gauge Animation
+// // =====================
+// function updateGauge(score, level) {
+//     const gaugeCircle = document.querySelector(".gauge-progress");
+//     const gaugeText = document.querySelector(".gauge-text");
+//     const circumference = 314;
+
+//     const offset = circumference - (score / 100) * circumference;
+//     gaugeCircle.style.strokeDashoffset = offset;
+
+//     let color = "#45a29e";
+//     if (level === "Medium") color = "#f1c40f";
+//     if (level === "High") color = "#e67e22";
+//     if (level === "Critical") color = "#e74c3c";
+
+//     gaugeCircle.style.stroke = color;
+//     gaugeText.style.fill = color;
+
+//     let current = 0;
+//     const interval = setInterval(() => {
+//         gaugeText.textContent = `${current}%`;
+//         current++;
+//         if (current >= score) clearInterval(interval);
+//     }, 15);
+// }
+
+// // =====================
+// // Download Report
+// // =====================
+// document.getElementById("download-report").addEventListener("click", () => {
+//     const reportText = `
+// LeakCheck Leakage Risk Report
+// -----------------------------
+// Risk Score: ${document.getElementById("risk-score").textContent}
+// Severity: ${document.getElementById("risk-level").textContent}
+
+// Details:
+// ${document.getElementById("report-details").innerText}
+// `;
+
+//     const blob = new Blob([reportText], { type: "text/plain" });
+//     const link = document.createElement("a");
+//     link.href = URL.createObjectURL(blob);
+//     link.download = "LeakCheck_Report.txt";
+//     link.click();
 // });
 
-// // Allow pressing Enter to send
+// // =====================
+// // Send Message Handlers
+// // =====================
+// sendButton.addEventListener("click", () => {
+//     const userMessage = inputField.value.trim();
+//     if (!userMessage) return;
+
+//     addMessage(userMessage, "user");
+//     inputField.value = "";
+//     simulateBotResponse(userMessage);
+// });
+
 // inputField.addEventListener("keypress", (e) => {
-//   if (e.key === "Enter") {
-//     sendButton.click();
-//   }
+//     if (e.key === "Enter") {
+//         sendButton.click();
+//     }
 // });
