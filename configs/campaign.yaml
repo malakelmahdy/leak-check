@@ -1,0 +1,57 @@
+run:
+  name: "discussion_demo"
+  seed: 1337
+  output_root: "data/runs"
+
+dataset:
+  path: "data/raw/prompts_demo.jsonl"
+  format: "jsonl"   # jsonl | csv
+  text_field: "text"
+  id_field: "id"
+  category_field: "category"
+
+attack:
+  enabled: true
+  mutations_per_prompt: 3
+  operators:
+    # Attack-style operators (applied only to non-benign categories by mutate.py)
+    - prefix_injection
+    - role_wrapper
+    - instruction_stack
+
+    # Shared operators
+    - format_shift
+    - obfuscate_spacing
+
+    # Benign-safe operators (applied only to benign category by mutate.py)
+    - benign_rephrase_prefix
+    - benign_wrapper
+
+llm:
+  provider: "lmstudio_openai_compat"
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  timeout_s: 60
+  retries: 2
+  params:
+    model: "llama-3.2-3b-instruct"
+    temperature: 0.3
+    max_tokens: 256
+
+detection:
+  enabled: true
+  similarity_model: "model/best_model"
+  similarity_threshold: 0.50
+
+  # ✅ CHANGE 1: turn this OFF for the discussion demo (cleaner metrics)
+  use_learned_anchors: true
+  learned_anchors_path: "data/interim/learned_attacks.jsonl"
+
+scoring:
+  enabled: true
+  thresholds_file: "configs/thresholds.yaml"
+
+reporting:
+  enabled: true
+  output_report_md: true
+  output_report_html: true
+  output_summary_json: true

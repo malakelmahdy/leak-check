@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeakCheck — Reports</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <nav class="navbar">
+        <a href="/" class="logo">Leak<span>Check</span></a>
+        <button class="menu-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')">☰</button>
+        <ul class="nav-links">
+            <li><a href="/"><span class="icon">🏠</span> Home</a></li>
+            <li><a href="/campaigns"><span class="icon">⚔️</span> Campaigns</a></li>
+            <li><a href="/reports" class="active"><span class="icon">📊</span> Reports</a></li>
+            <li><a href="/chat"><span class="icon">💬</span> Chat</a></li>
+        </ul>
+    </nav>
+
+    <div class="page-body">
+        <h2 class="section-title">📊 Campaign Reports</h2>
+        <p class="section-subtitle">Browse all campaign runs and preview detailed HTML reports.</p>
+
+        <!-- Summary stats -->
+        <div class="stat-grid" id="reports-stats">
+            <div class="stat-card fade-in">
+                <div class="value" id="stat-total-runs">—</div>
+                <div class="label">Total Runs</div>
+            </div>
+            <div class="stat-card fade-in" style="animation-delay:0.1s">
+                <div class="value" id="stat-total-prompts" style="color:#ff9800">—</div>
+                <div class="label">Total Prompts Tested</div>
+            </div>
+            <div class="stat-card fade-in" style="animation-delay:0.2s">
+                <div class="value" id="stat-total-attacks" style="color:#f44336">—</div>
+                <div class="label">Total Attacks Succeeded</div>
+            </div>
+        </div>
+
+        <!-- Reports Grid -->
+        <div id="reports-container">
+            <div class="empty-state">
+                <div class="icon">⏳</div>
+                <p>Loading reports...</p>
+            </div>
+        </div>
+
+        <footer class="page-footer">
+            Powered by <strong>LeakCheck</strong> — AI Privacy & Security Framework
+        </footer>
+    </div>
+
+    <!-- Report Preview Overlay -->
+    <div class="report-preview-overlay" id="preview-overlay">
+        <button class="preview-close" onclick="closePreview()">✕ Close</button>
+        <iframe class="report-preview-frame" id="preview-frame"></iframe>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', loadReports);
+
+        async function loadReports() {
+            try {
+                const resp = await fetch('/api/reports');
+                const runs = await resp.json();
+                const container = document.getElementById('reports-container');
+
+                if (runs.length === 0) {
+                    container.innerHTML = `
+            <div class="empty-state">
+              <div class="icon">📭</div>
+              <p>No campaign runs yet. <a href="/campaigns">Launch your first campaign</a> to see reports here.</p>
+            </div>`;
+                    return;
+                }
+
+                // Update stats
+                document.getElementById('stat-total-runs').textContent = runs.length;
+                let totalPrompts = 0, totalAttacks = 0;
+                runs.forEach(r => {
+                    totalPrompts += (r.total || 0);
+                    totalAttacks += (r.successes || 0);
+                });
+                document.getElementById('stat-total-prompts').textContent = totalPrompts.toLocaleString();
+                document.getElementById('stat-total-attacks').textContent = totalAttacks.toLocaleString();
+
+                // Build cards
+                container.innerHTML = '<div class="reports-grid">' + runs.map(r => `
+          <div class="report-card fade-in" onclick="previewReport('${r.id}')">
+            <div class="card-header">
+              <h4>${r.campaign_name || r.id}</h4>
+              <span class="date">${r.created_at || '—'}</span>
+            </div>
+            <div class="card-stats">
+              <div class="mini-stat">
+                <strong style="color:var(--accent)">${r.total || 0}</strong>
+                Prompts
+              </div>
+              <div class="mini-stat">
+                <strong style="color:#f44336">${r.successes || 0}</strong>
+                Succeeded
+              </div>
+              <div class="mini-stat">
+                <strong style="color:#ff9800">${r.attempts || 0}</strong>
+                Attempted
+              </div>
+              <div class="mini-stat">
+                <strong style="color:#66fcf1">${r.safes || 0}</strong>
+                Safe
+              </div>
+            </div>
+            <div class="card-footer">
+              <span class="badge ${r.success_rate > 30 ? 'badge-danger' : r.success_rate > 10 ? 'badge-injection' : 'badge-benign'}">
+                ${r.success_rate || 0}% success rate
+              </span>
+              <span style="font-size:0.8rem;opacity:0.6">
+                ${r.model || '—'} ${r.has_report ? '📄' : ''}
+              </span>
+            </div>
+          </div>
+        `).join('') + '</div>';
+
+            } catch (err) {
+                document.getElementById('reports-container').innerHTML = `
+          <div class="empty-state">
+            <div class="icon">⚠️</div>
+            <p>Failed to load reports: ${err.message}</p>
+          </div>`;
+            }
+        }
+
+        function previewReport(runId) {
+            const overlay = document.getElementById('preview-overlay');
+            const frame = document.getElementById('preview-frame');
+            frame.src = `/api/reports/${runId}/html`;
+            overlay.classList.add('active');
+        }
+
+        function closePreview() {
+            const overlay = document.getElementById('preview-overlay');
+            overlay.classList.remove('active');
+            document.getElementById('preview-frame').src = '';
+        }
+
+        // Close on escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closePreview();
+        });
+
+        // Close on backdrop click
+        document.getElementById('preview-overlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closePreview();
+        });
+    </script>
+
+</body>
+
+</html>

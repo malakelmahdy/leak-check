@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeakCheck — Attack Campaigns</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <nav class="navbar">
+        <a href="/" class="logo">Leak<span>Check</span></a>
+        <button class="menu-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')">☰</button>
+        <ul class="nav-links">
+            <li><a href="/"><span class="icon">🏠</span> Home</a></li>
+            <li><a href="/campaigns" class="active"><span class="icon">⚔️</span> Campaigns</a></li>
+            <li><a href="/reports"><span class="icon">📊</span> Reports</a></li>
+            <li><a href="/chat"><span class="icon">💬</span> Chat</a></li>
+        </ul>
+    </nav>
+
+    <div class="page-body">
+        <h2 class="section-title">⚔️ Attack Campaign</h2>
+        <p class="section-subtitle">Configure and launch adversarial attack campaigns against LLM models.</p>
+
+        <div class="campaign-layout">
+
+            <!-- Config Panel -->
+            <div class="config-panel">
+                <h3>Campaign Settings</h3>
+
+                <div class="form-group">
+                    <label>Campaign Name</label>
+                    <input type="text" class="form-control" id="campaign-name" value="Web Campaign"
+                        placeholder="Enter campaign name">
+                </div>
+
+                <div class="form-group">
+                    <label>Target Model</label>
+                    <select class="form-control" id="model-select">
+                        <option value="llama-3.2-3b-instruct">Llama 3.2 3B Instruct (Local)</option>
+                        <option value="gpt-4">GPT-4</option>
+                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                        <option value="claude-3-sonnet">Claude 3 Sonnet</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Number of Prompts</label>
+                    <div class="range-wrap">
+                        <input type="range" min="5" max="200" value="20" id="prompt-count"
+                            oninput="document.getElementById('prompt-count-val').textContent=this.value+' prompts'">
+                        <span class="range-val" id="prompt-count-val">20 prompts</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Mutations per Prompt</label>
+                    <div class="range-wrap">
+                        <input type="range" min="1" max="10" value="2" id="mutations-per"
+                            oninput="document.getElementById('mutations-val').textContent=this.value+'x mutations'">
+                        <span class="range-val" id="mutations-val">2x mutations</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Mutation Level</label>
+                    <div class="range-wrap">
+                        <input type="range" min="1" max="5" value="2" id="mutation-level"
+                            oninput="updateMutationLabel()">
+                        <span class="range-val" id="mutation-level-val">Moderate (2)</span>
+                    </div>
+                </div>
+
+                <div style="display:flex;gap:1rem;margin-top:1.5rem">
+                    <button class="btn btn-primary" id="run-btn" onclick="startCampaign()">
+                        🚀 Run Campaign
+                    </button>
+                    <button class="btn btn-secondary" id="stop-btn" style="display:none" onclick="stopPolling()">
+                        ⏹ Stop Polling
+                    </button>
+                </div>
+            </div>
+
+            <!-- Progress Panel -->
+            <div class="progress-panel">
+                <h3>Campaign Progress</h3>
+
+                <div id="campaign-status" style="margin:1rem 0">
+                    <span class="badge badge-benign" id="status-badge">Ready</span>
+                </div>
+
+                <div class="progress-bar-wrap">
+                    <div class="progress-bar" id="progress-bar"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:1rem">
+                    <span id="progress-text">0 / 0 prompts</span>
+                    <span id="progress-pct">0%</span>
+                </div>
+
+                <div class="campaign-log" id="campaign-log">
+                    <div style="opacity:0.5">Campaign log will appear here...</div>
+                </div>
+            </div>
+
+        </div>
+
+        <footer class="page-footer">
+            Powered by <strong>LeakCheck</strong> — AI Privacy & Security Framework
+        </footer>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+    <script>
+        const mutationNames = { 1: 'Basic', 2: 'Moderate', 3: 'Advanced', 4: 'Aggressive', 5: 'Maximum' };
+        let pollInterval = null;
+
+        function updateMutationLabel() {
+            const val = document.getElementById('mutation-level').value;
+            document.getElementById('mutation-level-val').textContent = `${mutationNames[val]} (${val})`;
+        }
+
+        function logMsg(msg) {
+            const log = document.getElementById('campaign-log');
+            const line = document.createElement('div');
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        async function startCampaign() {
+            const btn = document.getElementById('run-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Starting...';
+
+            const log = document.getElementById('campaign-log');
+            log.innerHTML = '';
+
+            const config = {
+                campaign_name: document.getElementById('campaign-name').value,
+                model: document.getElementById('model-select').value,
+                prompt_count: document.getElementById('prompt-count').value,
+                mutations_per_prompt: document.getElementById('mutations-per').value,
+                mutation_level: document.getElementById('mutation-level').value,
+            };
+
+            logMsg(`Starting campaign "${config.campaign_name}" against ${config.model}`);
+            logMsg(`Configuration: ${config.prompt_count} prompts × ${config.mutations_per_prompt} mutations, Level ${config.mutation_level}`);
+
+            try {
+                const resp = await fetch('/api/campaign/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config),
+                });
+                const data = await resp.json();
+
+                if (data.error) {
+                    logMsg(`❌ Error: ${data.error}`);
+                    showToast('Campaign failed to start', 'error');
+                    btn.disabled = false;
+                    btn.textContent = '🚀 Run Campaign';
+                    return;
+                }
+
+                logMsg(`Job started: ${data.job_id}`);
+                document.getElementById('status-badge').textContent = 'Running';
+                document.getElementById('status-badge').className = 'badge badge-injection';
+                document.getElementById('stop-btn').style.display = '';
+
+                pollInterval = setInterval(() => pollStatus(data.job_id), 2000);
+                showToast('Campaign started!', 'info');
+
+            } catch (err) {
+                logMsg(`❌ Error: ${err.message}`);
+                showToast('Failed to start campaign', 'error');
+                btn.disabled = false;
+                btn.textContent = '🚀 Run Campaign';
+            }
+        }
+
+        async function pollStatus(jobId) {
+            try {
+                const resp = await fetch(`/api/campaign/status/${jobId}`);
+                const job = await resp.json();
+
+                const total = job.total || 0;
+                const progress = job.progress || 0;
+                const pct = total > 0 ? Math.round(progress / total * 100) : 0;
+
+                document.getElementById('progress-bar').style.width = pct + '%';
+                document.getElementById('progress-text').textContent = `${progress} / ${total} prompts`;
+                document.getElementById('progress-pct').textContent = pct + '%';
+
+                if (job.status === 'done') {
+                    clearInterval(pollInterval);
+                    document.getElementById('status-badge').textContent = 'Completed';
+                    document.getElementById('status-badge').className = 'badge badge-success';
+                    document.getElementById('progress-bar').style.width = '100%';
+                    document.getElementById('run-btn').disabled = false;
+                    document.getElementById('run-btn').textContent = '🚀 Run Campaign';
+                    document.getElementById('stop-btn').style.display = 'none';
+
+                    logMsg(`✅ Campaign complete! Run: ${job.run_dir}`);
+                    showToast('Campaign completed! View report in Reports page.', 'success');
+
+                } else if (job.status === 'error') {
+                    clearInterval(pollInterval);
+                    document.getElementById('status-badge').textContent = 'Error';
+                    document.getElementById('status-badge').className = 'badge badge-danger';
+                    document.getElementById('run-btn').disabled = false;
+                    document.getElementById('run-btn').textContent = '🚀 Run Campaign';
+                    document.getElementById('stop-btn').style.display = 'none';
+
+                    logMsg(`❌ Error: ${job.error}`);
+                    showToast('Campaign failed!', 'error');
+
+                } else {
+                    logMsg(`Processing prompt ${progress}/${total}...`);
+                }
+
+            } catch (err) {
+                logMsg(`⚠ Poll error: ${err.message}`);
+            }
+        }
+
+        function stopPolling() {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+            }
+            document.getElementById('stop-btn').style.display = 'none';
+            document.getElementById('run-btn').disabled = false;
+            document.getElementById('run-btn').textContent = '🚀 Run Campaign';
+            logMsg('Polling stopped (campaign continues in background)');
+        }
+    </script>
+
+</body>
+
+</html>

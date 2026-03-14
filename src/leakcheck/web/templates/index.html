@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeakCheck — AI Security Assessment</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <!-- Navigation -->
+    <nav class="navbar">
+        <a href="/" class="logo">Leak<span>Check</span></a>
+        <button class="menu-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')">☰</button>
+        <ul class="nav-links">
+            <li><a href="/" class="active"><span class="icon">🏠</span> Home</a></li>
+            <li><a href="/campaigns"><span class="icon">⚔️</span> Campaigns</a></li>
+            <li><a href="/reports"><span class="icon">📊</span> Reports</a></li>
+            <li><a href="/chat"><span class="icon">💬</span> Chat</a></li>
+        </ul>
+    </nav>
+
+    <div class="page-body">
+
+        <!-- Hero -->
+        <section class="hero">
+            <h1>AI Privacy &amp; Security <span class="accent">Framework</span></h1>
+            <p>
+                Audit LLMs for privacy leaks, prompt injection vulnerabilities, and jailbreak risks.
+                Run automated attack campaigns, analyze results, and chat interactively with models.
+            </p>
+            <div class="hero-actions">
+                <a href="/campaigns" class="btn btn-primary">⚔️ Launch a Campaign</a>
+                <a href="/reports" class="btn btn-secondary">📊 View Reports</a>
+                <a href="/chat" class="btn btn-secondary">💬 Chat with LLM</a>
+            </div>
+        </section>
+
+        <!-- Feature Cards -->
+        <h2 class="section-title">Core Features</h2>
+        <div class="feature-grid">
+
+            <div class="feature-card fade-in">
+                <div class="icon">🎯</div>
+                <h3>Attack Generator</h3>
+                <p>Generate adversarial prompts with mutation levels from Basic to Maximum. Configure campaigns with
+                    custom prompt counts and model targets.</p>
+            </div>
+
+            <div class="feature-card fade-in" style="animation-delay:0.1s">
+                <div class="icon">🔍</div>
+                <h3>Detection Engine</h3>
+                <p>Rule-based + semantic similarity detection. Catches prompt injection, jailbreak attempts, and data
+                    exfiltration with confidence scoring.</p>
+            </div>
+
+            <div class="feature-card fade-in" style="animation-delay:0.2s">
+                <div class="icon">📈</div>
+                <h3>Rich Reports</h3>
+                <p>Beautiful HTML reports with Chart.js visualizations, risk gauges, severity badges, and expandable
+                    prompt/response details.</p>
+            </div>
+
+            <div class="feature-card fade-in" style="animation-delay:0.3s">
+                <div class="icon">💬</div>
+                <h3>Interactive Chat</h3>
+                <p>Chat directly with any LLM model. Each message is analyzed in real-time for security risks with
+                    instant detection feedback.</p>
+            </div>
+
+            <div class="feature-card fade-in" style="animation-delay:0.4s">
+                <div class="icon">🧬</div>
+                <h3>Prompt Mutations</h3>
+                <p>5 mutation levels with operators like role injection, encoding tricks, DAN jailbreaks, and multi-step
+                    attack chains.</p>
+            </div>
+
+            <div class="feature-card fade-in" style="animation-delay:0.5s">
+                <div class="icon">🛡️</div>
+                <h3>Risk Scoring</h3>
+                <p>Weighted severity engine combining verdict confidence, category impact, and similarity scores into
+                    actionable risk metrics.</p>
+            </div>
+
+        </div>
+
+        <!-- Quick Stats -->
+        <h2 class="section-title">System Status</h2>
+        <div class="stat-grid" id="status-stats">
+            <div class="stat-card fade-in">
+                <div class="value" id="llm-status">...</div>
+                <div class="label">LLM Status</div>
+            </div>
+            <div class="stat-card fade-in" style="animation-delay:0.1s">
+                <div class="value" id="total-runs">—</div>
+                <div class="label">Total Runs</div>
+            </div>
+            <div class="stat-card fade-in" style="animation-delay:0.2s">
+                <div class="value" id="total-prompts">—</div>
+                <div class="label">Prompts Tested</div>
+            </div>
+        </div>
+
+        <footer class="page-footer">
+            Powered by <strong>LeakCheck</strong> — AI Privacy & Security Framework
+        </footer>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+    <script>
+        // Load system status on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Ping LLM
+            try {
+                const ping = await fetch('/api/ping');
+                const data = await ping.json();
+                const el = document.getElementById('llm-status');
+                if (data.status === 'ok') {
+                    el.textContent = '🟢 Online';
+                    el.style.color = '#4caf50';
+                } else {
+                    el.textContent = '🔴 Offline';
+                    el.style.color = '#f44336';
+                }
+            } catch {
+                document.getElementById('llm-status').textContent = '🔴 Offline';
+            }
+
+            // Load runs count
+            try {
+                const resp = await fetch('/api/reports');
+                const runs = await resp.json();
+                document.getElementById('total-runs').textContent = runs.length;
+                let totalPrompts = 0;
+                runs.forEach(r => { totalPrompts += (r.total || 0); });
+                document.getElementById('total-prompts').textContent = totalPrompts.toLocaleString();
+            } catch { /* ignore */ }
+        });
+    </script>
+
+</body>
+
+</html>

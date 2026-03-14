@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeakCheck — Chat</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <nav class="navbar">
+        <a href="/" class="logo">Leak<span>Check</span></a>
+        <button class="menu-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')">☰</button>
+        <ul class="nav-links">
+            <li><a href="/"><span class="icon">🏠</span> Home</a></li>
+            <li><a href="/campaigns"><span class="icon">⚔️</span> Campaigns</a></li>
+            <li><a href="/reports"><span class="icon">📊</span> Reports</a></li>
+            <li><a href="/chat" class="active"><span class="icon">💬</span> Chat</a></li>
+        </ul>
+    </nav>
+
+    <div class="page-body">
+        <div class="chat-layout">
+
+            <!-- Chat Container -->
+            <div class="chat-container">
+                <div class="chat-header">
+                    <h3>💬 LeakCheck Chat</h3>
+                    <select class="form-control" id="model-select" style="width:auto">
+                        <option value="llama-3.2-3b-instruct">Llama 3.2 3B (Local)</option>
+                        <option value="gpt-4">GPT-4</option>
+                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                        <option value="claude-3-sonnet">Claude 3 Sonnet</option>
+                    </select>
+                </div>
+
+                <div class="chat-messages" id="chat-messages">
+                    <div class="msg msg-bot">
+                        👋 Hi! I'm LeakCheck's interactive chat. Type any prompt and I'll respond — each message is
+                        analyzed for security risks in real-time.
+                    </div>
+                </div>
+
+                <div class="chat-input-bar">
+                    <input type="text" id="chat-input" placeholder="Type your message..." autocomplete="off">
+                    <button id="send-btn" onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+
+            <!-- Detection Panel -->
+            <div class="detection-panel">
+                <h3>🔍 Detection Panel</h3>
+
+                <!-- Risk Gauge -->
+                <div class="det-card" style="text-align:center">
+                    <h4>Risk Score</h4>
+                    <div class="mini-gauge">
+                        <svg viewBox="0 0 120 120">
+                            <circle class="gauge-bg" cx="60" cy="60" r="50" />
+                            <circle class="gauge-fill" id="gauge-fill" cx="60" cy="60" r="50"
+                                style="stroke:var(--accent)" />
+                            <text class="gauge-text" x="60" y="60" text-anchor="middle" id="gauge-text">—</text>
+                        </svg>
+                    </div>
+                    <div class="det-meta" id="gauge-label">Send a message to analyze</div>
+                </div>
+
+                <!-- Last Detection -->
+                <div class="det-card" id="last-detection">
+                    <h4>Last Detection</h4>
+                    <div style="font-size:0.85rem;opacity:0.6">No analysis yet</div>
+                </div>
+
+                <!-- Detection History -->
+                <div class="det-card">
+                    <h4>Detection History</h4>
+                    <div class="det-history" id="det-history">
+                        <div style="font-size:0.85rem;opacity:0.5;text-align:center;padding:1rem">
+                            Messages will be analyzed here
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn btn-secondary" style="width:100%" onclick="clearChat()">
+                    🗑 Clear Chat
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+    <script>
+        const chatMessages = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        let messageCount = 0;
+
+        // Enter to send
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        function addMsg(text, type) {
+            const div = document.createElement('div');
+            div.className = `msg msg-${type}`;
+            div.textContent = text;
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return div;
+        }
+
+        function addTyping() {
+            const div = document.createElement('div');
+            div.className = 'msg msg-typing';
+            div.id = 'typing-indicator';
+            div.textContent = '•••';
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return div;
+        }
+
+        function removeTyping() {
+            const el = document.getElementById('typing-indicator');
+            if (el) el.remove();
+        }
+
+        async function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+
+            chatInput.value = '';
+            addMsg(text, 'user');
+            const typing = addTyping();
+
+            const model = document.getElementById('model-select').value;
+
+            try {
+                const resp = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, model: model }),
+                });
+
+                removeTyping();
+                const data = await resp.json();
+
+                if (data.error) {
+                    addMsg('⚠️ ' + data.error, 'bot');
+                    return;
+                }
+
+                // Type out response
+                typeMessage(data.reply, 'bot');
+
+                // Update detection panel
+                if (data.detection) {
+                    updateDetectionPanel(data.detection, text);
+                }
+
+            } catch (err) {
+                removeTyping();
+                addMsg('⚠️ Error: ' + err.message, 'bot');
+            }
+        }
+
+        function typeMessage(text, type) {
+            const div = document.createElement('div');
+            div.className = `msg msg-${type}`;
+            chatMessages.appendChild(div);
+
+            let i = 0;
+            const speed = 15;
+            const interval = setInterval(() => {
+                div.textContent += text.charAt(i);
+                i++;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+                if (i >= text.length) clearInterval(interval);
+            }, speed);
+        }
+
+        function updateDetectionPanel(det, promptText) {
+            messageCount++;
+
+            // Determine risk score from severity (0-10 scale -> 0-100)
+            const severity = det.severity || 0;
+            const riskScore = Math.min(100, Math.round(severity * 10));
+
+            // Update gauge
+            const circumference = 314;
+            const offset = circumference - (riskScore / 100) * circumference;
+            const gaugeFill = document.getElementById('gauge-fill');
+            const gaugeText = document.getElementById('gauge-text');
+            const gaugeLabel = document.getElementById('gauge-label');
+
+            let color = '#66fcf1';
+            if (riskScore >= 70) color = '#f44336';
+            else if (riskScore >= 40) color = '#ff9800';
+
+            gaugeFill.style.stroke = color;
+            gaugeFill.style.strokeDashoffset = offset;
+            gaugeText.style.fill = color;
+
+            // Animate counter
+            let current = 0;
+            const target = riskScore;
+            const counterInterval = setInterval(() => {
+                gaugeText.textContent = current;
+                current++;
+                if (current > target) clearInterval(counterInterval);
+            }, 15);
+
+            gaugeLabel.innerHTML = `<span class="badge badge-${det.level === 'critical' ? 'danger' : det.level === 'high' ? 'jailbreak' : det.level === 'medium' ? 'injection' : 'benign'}">${(det.level || 'low').toUpperCase()}</span>`;
+
+            // Last detection card
+            const lastDet = document.getElementById('last-detection');
+            const verdictColor = { attack_success: '#f44336', attack_attempt: '#ff9800', safe: '#66fcf1' }[det.verdict] || '#c5c6c7';
+            lastDet.innerHTML = `
+        <h4>Last Detection</h4>
+        <div style="margin:0.5rem 0">
+          <span style="color:${verdictColor};font-weight:700;font-size:1.1rem">${det.verdict || '—'}</span>
+        </div>
+        <div style="font-size:0.8rem;line-height:1.8">
+          <div>Confidence: <strong style="color:var(--accent)">${((det.confidence || 0) * 100).toFixed(0)}%</strong></div>
+          <div>Severity: <strong style="color:var(--accent)">${severity.toFixed(2)}</strong></div>
+          <div>Similarity: <strong style="color:var(--accent)">${(det.similarity_score || 0).toFixed(4)}</strong></div>
+          ${det.rule_hits && det.rule_hits.length ? `<div>Rules: ${det.rule_hits.join(', ')}</div>` : ''}
+          ${det.response_signals && det.response_signals.length ? `<div>Signals: ${det.response_signals.join(', ')}</div>` : ''}
+        </div>
+      `;
+
+            // Detection history
+            const history = document.getElementById('det-history');
+            if (messageCount === 1) history.innerHTML = '';
+
+            const item = document.createElement('div');
+            item.className = 'det-item';
+            item.innerHTML = `
+        <span style="color:${verdictColor};font-weight:600">${det.verdict || '—'}</span>
+        <span class="badge badge-${det.level === 'critical' ? 'danger' : det.level === 'high' ? 'jailbreak' : det.level === 'medium' ? 'injection' : 'benign'}" style="font-size:0.7rem">${(det.level || 'low').toUpperCase()}</span>
+        <span style="opacity:0.5">${severity.toFixed(1)}</span>
+      `;
+            history.insertBefore(item, history.firstChild);
+        }
+
+        function clearChat() {
+            chatMessages.innerHTML = `
+        <div class="msg msg-bot">
+          👋 Chat cleared! Send a message to start a new conversation.
+        </div>
+      `;
+            messageCount = 0;
+            document.getElementById('gauge-text').textContent = '—';
+            document.getElementById('gauge-fill').style.strokeDashoffset = 314;
+            document.getElementById('gauge-label').textContent = 'Send a message to analyze';
+            document.getElementById('last-detection').innerHTML = '<h4>Last Detection</h4><div style="font-size:0.85rem;opacity:0.6">No analysis yet</div>';
+            document.getElementById('det-history').innerHTML = '<div style="font-size:0.85rem;opacity:0.5;text-align:center;padding:1rem">Messages will be analyzed here</div>';
+        }
+    </script>
+
+</body>
+
+</html>
