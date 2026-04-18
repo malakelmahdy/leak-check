@@ -331,13 +331,3 @@ ignore = ["E501"]
 ```
 
 Install dev dependencies with `pip install -e ".[dev]"` (includes `pytest>=8.0` and `ruff>=0.4`).
-
-## Known Limitations
-
-- **Web app duplicates CLI pipeline.** `src/leakcheck/web/app.py` contains an inline copy of `run_campaign()`; changes to the CLI pipeline must be mirrored manually in the web app.
-- **`model/best_model` is machine-local.** The local fine-tuned model is not portable across machines. Use `all-MiniLM-L6-v2` (a public SentenceTransformers model) as a portable alternative in `configs/campaign.yaml`.
-- **Learned anchors are append-only per run.** Anchors written during a run are not retroactively embedded into the already-cached index for that run; they take effect on the next run.
-- **Web chat hardcodes `all-MiniLM-L6-v2`.** The `/api/chat` detection path uses a fixed model name, independent of `campaign.yaml`.
-- **Web job state is in-memory only.** The `_jobs` dictionary is lost on process restart; there is no persistence layer.
-- **HTML reports reference external CDNs.** Generated `report.html` files load Chart.js and Google Fonts from the internet; offline rendering is not guaranteed.
-- **Unknown prompt categories default to attack operators.** Mutation filtering treats any category other than `benign` as an attack category.
