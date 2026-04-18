@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import random
 from pathlib import Path
+from typing import TypeAlias
 
 import pyarrow.parquet as pq
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-DATASETS_ROOT = Path(r"C:\Users\mahmoud\Downloads\DATASETS to use")
+PromptRow: TypeAlias = dict[str, str]
+DEFAULT_DATASETS_ROOT = Path(r"C:\Users\mahmoud\Downloads\DATASETS to use")
+DATASETS_ROOT = Path(os.environ.get("LEAKCHECK_DATASETS_ROOT", str(DEFAULT_DATASETS_ROOT)))
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -36,22 +40,22 @@ def _clean_text(text: str) -> str:
     return text.replace("\u2028", " ").replace("\u2029", " ")
 
 
-def write_jsonl(path: Path, records: list[dict]) -> None:
+def write_jsonl(path: Path, records: list[PromptRow]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for r in records:
-            r["text"] = _clean_text(r["text"])
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            cleaned = {**r, "text": _clean_text(r["text"])}
+            f.write(json.dumps(cleaned, ensure_ascii=False) + "\n")
     print(f"  Wrote {len(records):,} rows → {path}")
 
 
-def stratified_sample(records: list[dict], n: int, rng: random.Random) -> list[dict]:
+def stratified_sample(records: list[PromptRow], n: int, rng: random.Random) -> list[PromptRow]:
     """Sample n records, balanced across categories."""
-    by_cat: dict[str, list[dict]] = {}
+    by_cat: dict[str, list[PromptRow]] = {}
     for r in records:
         by_cat.setdefault(r["category"], []).append(r)
 
     per_cat = max(1, n // len(by_cat)) if by_cat else n
-    sampled: list[dict] = []
+    sampled: list[PromptRow] = []
     for cat, items in by_cat.items():
         k = min(per_cat, len(items))
         sampled.extend(rng.sample(items, k))
@@ -65,7 +69,7 @@ def stratified_sample(records: list[dict], n: int, rng: random.Random) -> list[d
 # ---------------------------------------------------------------------------
 PARQUET_LABEL_MAP = {0: "benign", 1: "prompt_injection", 2: "jailbreak"}
 
-def load_parquet_safety() -> list[dict]:
+def load_parquet_safety() -> list[PromptRow]:
     path = DATASETS_ROOT / "prompt-injection-safety" / "test-00000-of-00001.parquet"
     if not path.exists():
         print(f"  [SKIP] {path} not found")
@@ -90,7 +94,7 @@ def load_parquet_safety() -> list[dict]:
 # ---------------------------------------------------------------------------
 BENCHMARK_LABEL_MAP = {"jailbreak": "jailbreak", "benign": "benign"}
 
-def load_benchmark_csv() -> list[dict]:
+def load_benchmark_csv() -> list[PromptRow]:
     path = DATASETS_ROOT / "prompt-injections-benchmark" / "test.csv"
     if not path.exists():
         print(f"  [SKIP] {path} not found")
@@ -114,7 +118,7 @@ def load_benchmark_csv() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Dataset 3: CSV — prompt-injection-attack-dataset
 # ---------------------------------------------------------------------------
-def load_attack_csv() -> list[dict]:
+def load_attack_csv() -> list[PromptRow]:
     path = DATASETS_ROOT / "prompt-injection-attack-dataset" / "complete_dataset.csv"
     if not path.exists():
         print(f"  [SKIP] {path} not found")
@@ -139,7 +143,7 @@ def load_attack_csv() -> list[dict]:
 # ---------------------------------------------------------------------------
 JBC_LABEL_MAP = {"jailbreak": "jailbreak", "benign": "benign"}
 
-def load_jailbreak_csv() -> list[dict]:
+def load_jailbreak_csv() -> list[PromptRow]:
     base = DATASETS_ROOT / "jailbreak-classification"
     records = []
     for fname in ["jailbreak_dataset_train.csv", "jailbreak_dataset_test.csv"]:
@@ -164,7 +168,7 @@ def load_jailbreak_csv() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Original demo prompts (keep them)
 # ---------------------------------------------------------------------------
-def load_original_prompts() -> list[dict]:
+def load_original_prompts() -> list[PromptRow]:
     path = OUTPUT_DIR / "prompts.jsonl"
     if not path.exists():
         return []
@@ -183,6 +187,10 @@ def load_original_prompts() -> list[dict]:
 def main() -> None:
     rng = random.Random(42)
     print("=== Dataset Preparation ===\n")
+    print(f"Using datasets root: {DATASETS_ROOT}")
+    if not DATASETS_ROOT.exists():
+        print("Dataset root does not exist. Set LEAKCHECK_DATASETS_ROOT to the source directory.")
+        return
 
     # Load all sources
     parquet_records = load_parquet_safety()

@@ -1,1 +1,1 @@
-semantic_default: "all-MiniLM-L6-v2"
+semantic_default: "model/best_model"

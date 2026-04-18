@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import yaml  # type: ignore[import]
 from rich import print  # type: ignore[import]
@@ -20,10 +20,14 @@ from leakcheck.common.log_utils import log_line  # type: ignore[import]
 from leakcheck.datasets.ingest import ingest_local_jsonl, ingest_local_csv  # type: ignore[import]
 from leakcheck.attack.mutate import mutate_prompt  # type: ignore[import]
 from leakcheck.llm.client import LLMClient  # type: ignore[import]
-from leakcheck.scoring.score import load_thresholds, severity_level, compute_severity  # type: ignore[import]
+from leakcheck.scoring.score import compute_severity, load_scoring_policy, score_output_fields  # type: ignore[import]
 from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
 from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
 from leakcheck.reporting.report_html import write_report_html  # type: ignore[import]
+
+
+DEFAULT_SIMILARITY_MODEL = "model/best_model"
+VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]
 
 
 def load_yaml(path: str) -> dict[str, Any]:
@@ -32,6 +36,7 @@ def load_yaml(path: str) -> dict[str, Any]:
 
 
 def run_campaign(cfg_path: str) -> None:
+    from leakcheck.common.schemas import DetectionResult, LLMResponseRecord, MutationRecord  # type: ignore[import]
     from leakcheck.detect.detector import Detector  # type: ignore[import]
 
     cfg = load_yaml(cfg_path)
@@ -81,9 +86,7 @@ def run_campaign(cfg_path: str) -> None:
         use_learned=bool(det_cfg["use_learned_anchors"]),
         learned_path=resolve_project_path(str(det_cfg["learned_anchors_path"])) if det_cfg.get("learned_anchors_path") else None,
     )
-
-    # Scoring thresholds
-    thresholds = load_thresholds(resolve_project_path(cfg["scoring"]["thresholds_file"]))
+    scoring_policy = load_scoring_policy(resolve_project_path(cfg["scoring"]["thresholds_file"]))
 
     results_path = run_dir / "results.jsonl"
     all_results: list[dict[str, Any]] = []
@@ -96,11 +99,11 @@ def run_campaign(cfg_path: str) -> None:
                 mutation_records.append(mutate_prompt(p, ops, seed=seed, idx=i))
         else:
             # treat base as "mutation" index 0
-            from leakcheck.common.schemas import MutationRecord  # type: ignore[import]
             mutation_records.append(MutationRecord(base_id=p.id, mutation_id=f"{p.id}_m0", operators=[], text=p.text, seed=seed))
 
         # Repeatability computed per base prompt across its variants
-        det_flags = []
+        success_flags: list[int] = []
+        variant_runs: list[VariantRun] = []
 
         for m in mutation_records:
             prompt_id = m.mutation_id
@@ -112,19 +115,17 @@ def run_campaign(cfg_path: str) -> None:
 
             # Detect
             det = detector.detect(prompt_id=prompt_id, category=category, prompt_text=m.text, response_text=resp.response_text)
-            det_flags.append(1 if det.verdict in ("attack_attempt", "attack_success") else 0)
+            success_flags.append(1 if det.verdict == "attack_success" else 0)
+            variant_runs.append((m, resp, det))
 
-            # Repeatability so far (temporary); final repeatability per base will be computed after loop
-            tmp_repeat = sum(det_flags) / max(1, len(det_flags))
+        final_repeatability = sum(success_flags) / max(1, len(success_flags))
 
-            # Score
-            score = compute_severity(det, repeatability=tmp_repeat)
-            score.level = severity_level(thresholds, score.severity)
-
+        for m, resp, det in variant_runs:
+            score = compute_severity(det, repeatability=final_repeatability, policy=scoring_policy)
             record = {
                 "base_id": p.id,
-                "prompt_id": prompt_id,
-                "category": category,
+                "prompt_id": m.mutation_id,
+                "category": p.category,
                 "operators": m.operators,
                 "prompt_text": m.text,
                 "response_text": resp.response_text,
@@ -137,9 +138,8 @@ def run_campaign(cfg_path: str) -> None:
                 "rule_hits": det.rule_hits,
                 "similarity_score": det.similarity_score,
                 "response_signals": det.response_signals,
-                "severity": score.severity,
-                "level": score.level,
                 "evidence": det.evidence,
+                **score_output_fields(score),
             }
 
             append_jsonl(results_path, record)
@@ -202,7 +202,7 @@ def selftest_semantic() -> None:
     # Build indices (one per category)
     indices: dict = {}
     for cat in ("prompt_injection", "jailbreak", "data_exfil"):
-        indices[cat] = build_semantic_index("all-MiniLM-L6-v2", cat, None, False)
+        indices[cat] = build_semantic_index(resolve_project_path(DEFAULT_SIMILARITY_MODEL), cat, None, False)
 
     for cat, text in samples:
         sanitized = sanitize_for_similarity(text)
@@ -232,7 +232,7 @@ def ping_llm(endpoint: str) -> None:
 
 
 def show_top(results_path: str, n: int = 5) -> None:
-    """Print top-N results from a results.jsonl file, sorted by severity."""
+    """Print top-N results from a results.jsonl file, sorted by security relevance."""
     p = Path(results_path)
     if not p.exists():
         print(f"[red]File not found:[/red] {p}")
@@ -242,13 +242,20 @@ def show_top(results_path: str, n: int = 5) -> None:
         for line in f:
             if line.strip():
                 records.append(json.loads(line))
-    records.sort(key=lambda x: float(x.get("severity", 0)), reverse=True)
+    records.sort(
+        key=lambda x: max(
+            float(x.get("attack_risk_score", 0.0)),
+            float(x.get("signoff_severity", x.get("severity_v2", x.get("severity", 0)))),
+        ),
+        reverse=True,
+    )
     print(f"[bold]Top {n} results from {p.name}[/bold]\n")
     for i, r in enumerate(records[:n], 1):  # type: ignore[index]
         print(
             f"  {i}. [{r.get('verdict','?'):16s}]  "
-            f"sim={float(r.get('similarity_score',0)):.3f}  "
-            f"sev={float(r.get('severity',0)):.2f}  "
+            f"attack_risk={float(r.get('attack_risk_score', 0.0)):.2f}  "
+            f"leak={float(r.get('signoff_severity', r.get('severity_v2', r.get('severity',0)))):.2f}  "
+            f"leak_band={r.get('signoff_severity_label', r.get('severity_v2_label', r.get('severity_label', r.get('level','?'))))}  "
             f"rules={r.get('rule_hits',[])}  "
             f"id={r.get('prompt_id','')}"
         )

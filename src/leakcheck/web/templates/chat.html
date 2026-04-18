@@ -55,17 +55,26 @@
                 <h3>🔍 Detection Panel</h3>
 
                 <!-- Risk Gauge -->
-                <div class="det-card" style="text-align:center">
-                    <h4>Risk Score</h4>
+                <div class="det-card det-gauge-card">
                     <div class="mini-gauge">
                         <svg viewBox="0 0 120 120">
                             <circle class="gauge-bg" cx="60" cy="60" r="50" />
                             <circle class="gauge-fill" id="gauge-fill" cx="60" cy="60" r="50"
                                 style="stroke:var(--accent)" />
-                            <text class="gauge-text" x="60" y="60" text-anchor="middle" id="gauge-text">—</text>
+                                <text
+                                class="gauge-text"
+                                x="60"
+                                y="60"
+                                text-anchor="middle"
+                                dominant-baseline="middle"
+                                transform="rotate(90 60 60)"
+                                id="gauge-text"
+                                >—</text>
                         </svg>
                     </div>
-                    <div class="det-meta" id="gauge-label">Send a message to analyze</div>
+                    <div class="det-gauge-info">
+                        <div class="det-meta" id="gauge-label">Send a message to analyze</div>
+                    </div>
                 </div>
 
                 <!-- Last Detection -->
@@ -107,6 +116,19 @@
                 sendMessage();
             }
         });
+
+        function buildAttackStateChips(det, primaryFinding) {
+            const chips = [];
+            const semanticDegraded = Boolean(det.evidence?.semantic_degraded || det.semantic_degraded);
+            const blocked = det.verdict === 'attack_attempt';
+            const categoryLabel = classifyAttack(det, primaryFinding);
+
+            if (blocked) chips.push('<span class="det-chip det-chip-ok">Blocked before model execution</span>');
+            if (categoryLabel) chips.push('<span class="det-chip det-chip-muted">Attack detected</span>');
+            if (semanticDegraded) chips.push('<span class="det-chip det-chip-muted">Semantic degraded</span>');
+
+            return chips.join('');
+        }
 
         function addMsg(text, type) {
             const div = document.createElement('div');
@@ -150,7 +172,21 @@
                 });
 
                 removeTyping();
-                const data = await resp.json();
+                let data = {};
+                try {
+                    data = await resp.json();
+                } catch {
+                    addMsg(`⚠️ Request failed (${resp.status})`, 'bot');
+                    return;
+                }
+
+                if (!resp.ok) {
+                    addMsg(data.reply || data.error || `⚠️ Request failed (${resp.status})`, 'bot');
+                    if (data.detection) {
+                        updateDetectionPanel(data.detection, text);
+                    }
+                    return;
+                }
 
                 if (data.error) {
                     addMsg('⚠️ ' + data.error, 'bot');
@@ -186,67 +222,389 @@
             }, speed);
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function numeric(value, fallback = 0) {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : fallback;
+        }
+
+        function bandToBadgeClass(band) {
+            if (band === 'critical') return 'danger';
+            if (band === 'high') return 'jailbreak';
+            if (band === 'medium') return 'injection';
+            return 'benign';
+        }
+
+        function shortBand(band) {
+            const s = { critical: 'CRIT', high: 'HIGH', medium: 'MED', low: 'LOW', none: 'NONE' };
+            return s[band] || (band || '?').toUpperCase().slice(0, 4);
+        }
+
+        function titleize(value) {
+            return String(value || 'unknown')
+                .replace(/[_-]+/g, ' ')
+                .replace(/\b\w/g, (match) => match.toUpperCase());
+        }
+
+        // Persona-pattern heuristic from raw prompt text (safety net for backend misses).
+        const _PERSONA_RE = /\b(answer as|respond as|roleplay as|always act as|play the role of|take on the role|you will be|your name is)\b/i;
+
+        // Maps attack profile signals + raw category to a human-readable category label.
+        function classifyAttack(det, primaryFinding) {
+            const profile = det.evidence?.attack_profile || {};
+            const category = det.category || primaryFinding?.attack_category || '';
+            const leakType = primaryFinding?.leak_type;
+            if (leakType && leakType !== 'other') return null;
+            if (profile.prompt_exfiltration) return 'System prompt extraction attempt';
+            if (profile.secret_exfiltration) return 'Secret extraction attempt';
+            if (profile.role_hijack && profile.never_refuse) return 'Jailbreak attempt';
+            const promptText = det.evidence?.prompt_text || '';
+            const isPersonaText = _PERSONA_RE.test(promptText);
+            if (profile.role_hijack || isPersonaText) return 'Persona hijack attempt';
+            if (profile.ignore_previous && profile.persistence) return 'Instruction override attempt';
+            if (profile.ignore_previous || profile.obey_user_only) return 'Instruction override attempt';
+            if (profile.never_refuse) return 'Policy evasion attempt';
+            if (profile.persistence) return 'Instruction override attempt';
+            const catLabels = {
+                prompt_injection: 'Prompt injection attempt',
+                jailbreak: 'Jailbreak attempt',
+                data_exfil: 'Data exfiltration attempt',
+            };
+            if (catLabels[category]) return catLabels[category];
+            if (det.verdict === 'attack_success') return 'Attack succeeded';
+            if (det.verdict === 'attack_attempt') return 'Unclassified attack attempt';
+            return null;
+        }
+
+        // Returns a compact type label for the meta row.
+        function displayType(det, primaryFinding) {
+            const leakType = primaryFinding?.leak_type;
+            if (leakType && leakType !== 'other') {
+                const labels = {
+                    secret: 'Secret leakage', canary: 'Canary exposure', pii: 'PII exposure',
+                    system_prompt: 'System prompt', retrieval_content: 'Retrieval content',
+                    memory_content: 'Memory content', tool_output: 'Tool output',
+                    internal_architecture: 'Internal architecture', source_code: 'Source code',
+                };
+                return labels[leakType] || titleize(leakType);
+            }
+            return classifyAttack(det, primaryFinding) || 'Attack attempt';
+        }
+
+        function leakLabel(primaryFinding, det) {
+            const summary = primaryFinding?.summary || '';
+            // Filter out internal-ID fallback summaries like "other finding for chat_msg"
+            if (summary && !/\bfinding for \w+\b/i.test(summary) && !/^(other|unknown)\b/i.test(summary)) {
+                return summary;
+            }
+            const leakType = primaryFinding?.leak_type;
+            if (leakType && leakType !== 'other') {
+                const labels = {
+                    secret: 'Secret leakage finding',
+                    canary: 'Canary leakage finding',
+                    pii: 'PII leakage finding',
+                    system_prompt: 'System prompt disclosure',
+                    retrieval_content: 'Retrieval content leakage',
+                    memory_content: 'Conversation memory leakage',
+                    tool_output: 'Tool output leakage',
+                    internal_architecture: 'Internal architecture disclosure',
+                    source_code: 'Source code disclosure',
+                };
+                return labels[leakType] || `${titleize(leakType)} finding`;
+            }
+            if (det.verdict === 'safe') return 'No material leak detected';
+            return classifyAttack(det, primaryFinding) || 'Attack attempt';
+        }
+
+        function parseAppliedRules(rationale) {
+            const ruleLine = (rationale || []).find((item) => String(item || '').startsWith('applied_rules='));
+            if (!ruleLine) return [];
+            return ruleLine
+                .split('=', 2)[1]
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean)
+                .filter((item) => item !== 'standard_path');
+        }
+
+        function selectPrimaryFinding(det) {
+            const findings = Array.isArray(det.findings_v2) ? det.findings_v2 : [];
+            const scores = Array.isArray(det.severity_v2_scores) ? det.severity_v2_scores : [];
+            const byId = new Map(findings.map((finding) => [finding.finding_id, finding]));
+            const signoffFindingId = det.signoff_explanation?.finding_id;
+
+            if (signoffFindingId && byId.has(signoffFindingId)) {
+                return byId.get(signoffFindingId);
+            }
+
+            if (scores.length) {
+                const worstScore = [...scores].sort((a, b) => numeric(b.final_score) - numeric(a.final_score))[0];
+                if (worstScore?.finding_id && byId.has(worstScore.finding_id)) {
+                    return byId.get(worstScore.finding_id);
+                }
+            }
+
+            return findings[0] || null;
+        }
+
+        function buildStateChips(det, primaryFinding, explanation) {
+            const chips = [];
+            const validated = Boolean(primaryFinding?.validated || det.validated_secret);
+            const exactCanary = Boolean(primaryFinding?.exact_canary || det.exact_canary);
+            const reviewRequired = Boolean(explanation?.review_required ?? det.severity_v2_review_required);
+            const semanticOnly = Boolean(primaryFinding?.metadata?.semantic_only);
+            const semanticDegraded = Boolean(det.evidence?.semantic_degraded || det.semantic_degraded);
+
+            const validationLabel = validated ? 'Validated' : 'Unconfirmed';
+            chips.push(
+            `<span class="det-chip det-chip-${validated ? 'validated' : 'muted'}">${validationLabel}</span>`
+            );
+            chips.push(`<span class="det-chip det-chip-${reviewRequired ? 'review' : 'ok'}">${reviewRequired ? 'Review required' : 'No review flag'}</span>`);
+
+            if (exactCanary) chips.push('<span class="det-chip det-chip-danger">Exact canary</span>');
+            if (semanticOnly) chips.push('<span class="det-chip det-chip-warning">Semantic-only</span>');
+            if (semanticDegraded) chips.push('<span class="det-chip det-chip-muted">Semantic degraded</span>');
+
+            return chips.join('');
+        }
+
+        function buildReasonTags(det, primaryFinding, explanation, band) {
+            const rationale = Array.isArray(explanation?.rationale) ? explanation.rationale : [];
+            const appliedRules = parseAppliedRules(rationale);
+            const tags = [];
+            const validated = Boolean(primaryFinding?.validated || det.validated_secret);
+            const exactCanary = Boolean(primaryFinding?.exact_canary || det.exact_canary);
+            const semanticOnly = Boolean(primaryFinding?.metadata?.semantic_only);
+            const reviewRequired = Boolean(explanation?.review_required ?? det.severity_v2_review_required);
+            const evidenceConfidence = numeric(explanation?.evidence_confidence, 0);
+            const exposureLevel = primaryFinding?.exposure_level ? titleize(primaryFinding.exposure_level) : '';
+            const exploitability = numeric(explanation?.exploitability, 0);
+
+            if (exactCanary || appliedRules.includes('exact_canary_override')) tags.push('Exact canary override applied');
+            if (validated && primaryFinding?.leak_type === 'secret') tags.push('Validated secret path applied');
+            if (appliedRules.includes('semantic_only_cap')) tags.push('Semantic-only unsupported cap applied');
+            if (appliedRules.includes('low_confidence_cap')) tags.push('Low-confidence cap applied');
+
+            if (exploitability >= 0.6) tags.push('Exploitability derived from repeated successful trials');
+            else if (exploitability > 0) tags.push('Exploitability limited by weak reproducibility');
+            else tags.push('Exploitability remains low because success was not reproducible');
+
+            if (exposureLevel) tags.push(`Exposure extent based on ${exposureLevel.toLowerCase()} leak`);
+            if (!validated && evidenceConfidence < 0.75) tags.push('Confidence reduced due to missing validation');
+            if (semanticOnly && reviewRequired) tags.push('Unsupported semantic finding held for review');
+            if (band === 'low' && !appliedRules.length && numeric(explanation?.final_score, 0) > 0) {
+                tags.push('Low score reflects low impact or limited exploitability');
+            }
+
+            const uniqueTags = [...new Set(tags)].slice(0, 4);
+            return uniqueTags.map((tag) => `<span class="det-reason-chip">${escapeHtml(tag)}</span>`).join('');
+        }
+
+        function buildAxis(label, value, maxValue, tone = 'accent') {
+            const numericValue = numeric(value, 0);
+            const width = Math.max(0, Math.min(100, (numericValue / maxValue) * 100));
+            const display = maxValue === 10 ? `${numericValue.toFixed(1)} / 10` : numericValue.toFixed(2);
+            return `
+                <div class="det-axis">
+                    <div class="det-axis-head">
+                        <span>${escapeHtml(label)}</span>
+                        <strong>${display}</strong>
+                    </div>
+                    <div class="det-axis-bar">
+                        <span class="det-axis-fill det-axis-fill-${tone}" style="width:${width}%"></span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function buildDebugSection(det) {
+            const rows = [];
+            const evidence = det.evidence || {};
+
+            rows.push(['Verdict', det.verdict || '—']);
+            rows.push(['Legacy confidence', `${(numeric(det.confidence, 0) * 100).toFixed(0)}%`]);
+            rows.push(['Similarity', numeric(det.similarity_score, 0).toFixed(4)]);
+            if (det.rule_hits?.length) rows.push(['Rules', det.rule_hits.join(', ')]);
+            if (det.response_signals?.length) rows.push(['Signals', det.response_signals.join(', ')]);
+            if (evidence.semantic_error) rows.push(['Semantic error', evidence.semantic_error]);
+            if (det.score_explanation?.severity_label) rows.push(['Legacy score label', det.score_explanation.severity_label]);
+
+            const grid = rows.map(([label, value]) => `
+                <div class="det-debug-row">
+                    <dt>${escapeHtml(label)}</dt>
+                    <dd>${escapeHtml(value)}</dd>
+                </div>
+            `).join('');
+
+            return rows.length ? `
+                <details class="det-debug">
+                    <summary>Technical details</summary>
+                    <dl class="det-debug-grid">${grid}</dl>
+                </details>
+            ` : '';
+        }
+
         function updateDetectionPanel(det, promptText) {
             messageCount++;
 
-            // Determine risk score from severity (0-10 scale -> 0-100)
-            const severity = det.severity || 0;
-            const riskScore = Math.min(100, Math.round(severity * 10));
+            const attackRisk = numeric(det.attack_risk_score, 0);
+            const attackBand = det.attack_risk_band || 'none';
+            const attackExplanation = det.attack_risk_explanation || {};
+            const attackVersion = det.attack_risk_version || '';
+            const leakSeverity = numeric(det.leak_severity_score ?? det.signoff_severity ?? det.severity, 0);
+            const leakBand = det.leak_severity_band || det.signoff_severity_label || det.severity_v2_label || det.severity_label || det.level || 'none';
+            const leakVersion = det.leak_severity_version || det.signoff_score_version || det.score_version || '';
+            const primaryMode = leakSeverity > attackRisk ? 'Leak Severity' : 'Attack Risk';
+            const primaryScore = primaryMode === 'Leak Severity' ? leakSeverity : attackRisk;
+            const primaryBand = primaryMode === 'Leak Severity' ? leakBand : attackBand;
+            const gaugeValue = Math.max(0, Math.min(10, Number(primaryScore)));
+            const normalized = gaugeValue / 10;
+            const gaugePercent = Math.round(normalized * 100);
+            const explanation = det.leak_severity_explanation || det.signoff_explanation || {};
+            const primaryFinding = selectPrimaryFinding(det);
+            const attackLabel = classifyAttack(det, primaryFinding) || 'Attack attempt';
+            const leakFindingLabel = leakLabel(primaryFinding, det);
+            const findingLabel = primaryMode === 'Attack Risk' ? attackLabel : leakFindingLabel;
+            const bandClass = bandToBadgeClass(primaryBand);
+            const rationaleChips = buildReasonTags(det, primaryFinding, explanation, primaryBand);
+            const stateChips = primaryMode === 'Attack Risk'
+            ? buildAttackStateChips(det, primaryFinding)
+            : buildStateChips(det, primaryFinding, explanation);
+            const impact = numeric(explanation.impact, 0);
+            const evidenceConfidence = numeric(explanation.evidence_confidence, 0);
+            const exploitability = numeric(explanation.exploitability, 0);
+            const exposureExtent = numeric(explanation.exposure_extent, primaryFinding?.exposure_extent ?? 0);
+            const attackRationaleChips = (Array.isArray(det.attack_risk_rationale) ? det.attack_risk_rationale : [])
+                .slice(0, 4)
+                .map((tag) => `<span class="det-reason-chip">${escapeHtml(tag)}</span>`)
+                .join('');
+            const debugSection = buildDebugSection(det);
 
-            // Update gauge
+            function scoreColor(score) {
+                if (score >= 9) return '#f44336';
+                if (score >= 7) return '#ff5722';
+                if (score >= 4) return '#ff9800';
+                return '#66fcf1';
+            }
+
             const circumference = 314;
-            const offset = circumference - (riskScore / 100) * circumference;
+            const offset = circumference - normalized * circumference;
             const gaugeFill = document.getElementById('gauge-fill');
             const gaugeText = document.getElementById('gauge-text');
             const gaugeLabel = document.getElementById('gauge-label');
+            const gaugeColor = scoreColor(gaugeValue);
 
-            let color = '#66fcf1';
-            if (riskScore >= 70) color = '#f44336';
-            else if (riskScore >= 40) color = '#ff9800';
-
-            gaugeFill.style.stroke = color;
+            gaugeFill.style.stroke = gaugeColor;
             gaugeFill.style.strokeDashoffset = offset;
-            gaugeText.style.fill = color;
+            gaugeText.style.fill = gaugeColor;
+            gaugeText.textContent = `${gaugePercent}%`;
+            gaugeLabel.innerHTML = `
+            <div class="det-gauge-label">
+                <div class="det-gauge-version">${escapeHtml(primaryMode)}</div>
+                <div class="det-gauge-score-meta">${gaugeValue.toFixed(1)} / 10</div>
+                <span class="badge badge-${bandClass}">${escapeHtml(primaryBand.toUpperCase())}</span>
+            </div>
+            `;
 
-            // Animate counter
-            let current = 0;
-            const target = riskScore;
-            const counterInterval = setInterval(() => {
-                gaugeText.textContent = current;
-                current++;
-                if (current > target) clearInterval(counterInterval);
-            }, 15);
-
-            gaugeLabel.innerHTML = `<span class="badge badge-${det.level === 'critical' ? 'danger' : det.level === 'high' ? 'jailbreak' : det.level === 'medium' ? 'injection' : 'benign'}">${(det.level || 'low').toUpperCase()}</span>`;
-
-            // Last detection card
             const lastDet = document.getElementById('last-detection');
-            const verdictColor = { attack_success: '#f44336', attack_attempt: '#ff9800', safe: '#66fcf1' }[det.verdict] || '#c5c6c7';
             lastDet.innerHTML = `
-        <h4>Last Detection</h4>
-        <div style="margin:0.5rem 0">
-          <span style="color:${verdictColor};font-weight:700;font-size:1.1rem">${det.verdict || '—'}</span>
-        </div>
-        <div style="font-size:0.8rem;line-height:1.8">
-          <div>Confidence: <strong style="color:var(--accent)">${((det.confidence || 0) * 100).toFixed(0)}%</strong></div>
-          <div>Severity: <strong style="color:var(--accent)">${severity.toFixed(2)}</strong></div>
-          <div>Similarity: <strong style="color:var(--accent)">${(det.similarity_score || 0).toFixed(4)}</strong></div>
-          ${det.rule_hits && det.rule_hits.length ? `<div>Rules: ${det.rule_hits.join(', ')}</div>` : ''}
-          ${det.response_signals && det.response_signals.length ? `<div>Signals: ${det.response_signals.join(', ')}</div>` : ''}
-        </div>
-      `;
+                <h4>Last Detection</h4>
 
-            // Detection history
+                <div class="det-event-header">
+                    <div class="det-finding-label">${escapeHtml(findingLabel)}</div>
+                    <div class="det-chip-row">${stateChips}</div>
+                </div>
+
+                <div class="det-two-score-grid">
+                    <div class="det-score-card${attackRisk >= leakSeverity ? ' det-score-primary' : ''}">
+                        <div class="det-score-card-label">Attack Risk</div>
+                        <div class="det-score-card-number" style="color:${scoreColor(attackRisk)}">${attackRisk.toFixed(1)}</div>
+                        <span class="badge badge-${bandToBadgeClass(attackBand)}">${escapeHtml(attackBand.toUpperCase())}</span>
+                        ${attackVersion ? `<div class="det-score-card-version">${escapeHtml(attackVersion)}</div>` : ''}
+                    </div>
+                    <div class="det-score-card${leakSeverity > attackRisk ? ' det-score-primary' : ''}">
+                        <div class="det-score-card-label">Leak Severity</div>
+                        <div class="det-score-card-number" style="color:${scoreColor(leakSeverity)}">${leakSeverity.toFixed(1)}</div>
+                        <span class="badge badge-${bandToBadgeClass(leakBand)}">${escapeHtml(leakBand.toUpperCase())}</span>
+                        ${leakVersion ? `<div class="det-score-card-version">${escapeHtml(leakVersion)}</div>` : ''}
+                    </div>
+                </div>
+
+                <div class="det-meta-row">
+                    <span class="det-meta-pill">Primary: ${escapeHtml(primaryMode)}</span>
+                    <span class="det-meta-pill">Type: ${escapeHtml(displayType(det, primaryFinding))}</span>
+                </div>
+
+                <div class="det-section">
+                    <div class="det-section-title">Why this attack risk</div>
+                    <div class="det-rationale-list">
+                        ${attackRationaleChips || '<span class="det-reason-chip">No attack-risk rationale available</span>'}
+                    </div>
+                </div>
+
+                <div class="det-section">
+                    <div class="det-section-title">Why this leak severity</div>
+                    <div class="det-rationale-list">
+                        ${rationaleChips || '<span class="det-reason-chip">No special caps or overrides applied</span>'}
+                    </div>
+                </div>
+
+                <details class="det-expandable">
+                    <summary>Score breakdown</summary>
+                    <div class="det-section">
+                        <div class="det-section-title">Attack risk breakdown</div>
+                        <div class="det-breakdown">
+                            ${buildAxis('Intent confidence', numeric(attackExplanation.attack_intent_confidence, 0), 1, 'exposure')}
+                            ${buildAxis('Attack capability', numeric(attackExplanation.attack_capability, 0), 1, 'exploitability')}
+                            ${buildAxis('Sophistication', numeric(attackExplanation.attack_sophistication, 0), 1, 'confidence')}
+                            ${buildAxis('Override strength', numeric(attackExplanation.persistence_or_override_strength, 0), 1, 'impact')}
+                            ${buildAxis('Execution readiness', numeric(attackExplanation.execution_readiness, 0), 1, 'confidence')}
+                        </div>
+                    </div>
+                    <div class="det-section">
+                        <div class="det-section-title">Leak severity breakdown</div>
+                        <div class="det-breakdown">
+                            ${buildAxis('Impact', impact, 10, 'impact')}
+                            ${buildAxis('Evidence confidence', evidenceConfidence, 1, 'confidence')}
+                            ${buildAxis('Exploitability', exploitability, 1, 'exploitability')}
+                            ${buildAxis('Exposure extent', exposureExtent, 1, 'exposure')}
+                        </div>
+                    </div>
+                </details>
+
+                ${det.error ? `<div class="det-inline-alert">${escapeHtml(det.error)}</div>` : ''}
+                ${debugSection}
+            `;
+
             const history = document.getElementById('det-history');
             if (messageCount === 1) history.innerHTML = '';
 
             const item = document.createElement('div');
-            item.className = 'det-item';
+            item.className = 'det-item det-history-item';
+            const isValidated = primaryFinding?.validated || det.validated_secret;
+            const validatedLabel = isValidated
+            ? 'Validated'
+            : (explanation.review_required ? 'Review required' : 'Unconfirmed');
+            const validatedCls = isValidated ? 'det-chip-validated' : (explanation.review_required ? 'det-chip-review' : 'det-chip-muted');
             item.innerHTML = `
-        <span style="color:${verdictColor};font-weight:600">${det.verdict || '—'}</span>
-        <span class="badge badge-${det.level === 'critical' ? 'danger' : det.level === 'high' ? 'jailbreak' : det.level === 'medium' ? 'injection' : 'benign'}" style="font-size:0.7rem">${(det.level || 'low').toUpperCase()}</span>
-        <span style="opacity:0.5">${severity.toFixed(1)}</span>
-      `;
+            <div class="det-history-main">
+                <div class="det-history-label">${escapeHtml(findingLabel)}</div>
+                <div class="det-hi-chips">
+                ${attackRisk > 0 ? `<span class="det-hi-badge badge badge-${bandToBadgeClass(attackBand)}">A ${escapeHtml(shortBand(attackBand))}</span>` : ''}
+                ${leakSeverity > 0 ? `<span class="det-hi-badge badge badge-${bandToBadgeClass(leakBand)}">L ${escapeHtml(shortBand(leakBand))}</span>` : ''}
+                <span class="det-history-chip ${escapeHtml(validatedCls)}">${escapeHtml(validatedLabel)}</span>
+                </div>
+            </div>
+            <div class="det-history-score">A ${attackRisk.toFixed(1)} | L ${leakSeverity.toFixed(1)}</div>
+            `;
             history.insertBefore(item, history.firstChild);
         }
 

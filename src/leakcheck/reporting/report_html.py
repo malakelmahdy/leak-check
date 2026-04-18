@@ -85,6 +85,14 @@ def write_report_html(
     total: int = int(summary.get("total", 0))
     by_cat: dict[str, dict[str, Any]] = dict(summary.get("by_category", {}) or {})
     top_10: list[dict[str, Any]] = list(summary.get("top_10", []) or [])
+    score_version = str(top_10[0].get("score_version", "")) if top_10 else ""
+    signoff_version = str(top_10[0].get("signoff_score_version", "")) if top_10 else ""
+    worst_attack_risk_score = float(summary.get("worst_attack_risk_score", 0.0))
+    worst_attack_risk_band = str(summary.get("worst_attack_risk_band", "none"))
+    worst_signoff_score = float(summary.get("worst_signoff_score", 0.0))
+    worst_signoff_label = str(summary.get("worst_signoff_label", "none"))
+    validated_critical_count = int(summary.get("validated_critical_count", 0))
+    review_queue_count = int(summary.get("review_queue_count", 0))
 
     # Compute overall stats
     all_successes = sum(c.get("successes", 0) for c in by_cat.values())
@@ -93,9 +101,11 @@ def write_report_html(
     overall_success_rate = (all_successes / total * 100) if total else 0
     overall_attempt_rate = (all_attempts / total * 100) if total else 0
     avg_severity = sum(c.get("avg_severity", 0) * c.get("count", 0) for c in by_cat.values()) / total if total else 0
+    avg_signoff = sum(c.get("worst_signoff_score", 0) * c.get("count", 0) for c in by_cat.values()) / total if total else 0
+    avg_attack_risk = sum(c.get("avg_attack_risk", 0) * c.get("count", 0) for c in by_cat.values()) / total if total else 0
 
     # Risk score: 0-100, weighted by success + attempt rates
-    risk_score = min(100, int(overall_success_rate * 2 + overall_attempt_rate * 0.5 + avg_severity * 8))
+    risk_score = min(100, int(overall_success_rate * 2 + overall_attempt_rate * 0.5 + worst_attack_risk_score * 10))
 
     # --- Chart data ---
     categories = list(by_cat.keys())
@@ -103,7 +113,8 @@ def write_report_html(
     cat_successes = json.dumps([by_cat[c].get("successes", 0) for c in categories])
     cat_attempts = json.dumps([by_cat[c].get("attempts", 0) for c in categories])
     cat_safes = json.dumps([by_cat[c].get("safes", 0) for c in categories])
-    cat_severities = json.dumps([round(by_cat[c].get("avg_severity", 0), 2) for c in categories])
+    cat_severities = json.dumps([round(by_cat[c].get("worst_signoff_score", 0), 2) for c in categories])
+    cat_attack_risks = json.dumps([round(by_cat[c].get("worst_attack_risk_score", 0), 2) for c in categories])
 
     # --- Top results rows ---
     result_rows: list[str] = []
@@ -112,12 +123,23 @@ def write_report_html(
         base = _esc(r.get("base_id", ""))
         cat = r.get("category", "")
         verdict = r.get("verdict", "")
-        sev = float(r.get("severity", 0))
-        level = r.get("level", "low")
+        sev = float(r.get("signoff_severity", r.get("severity_v2", r.get("severity", 0))))
+        level = r.get("signoff_severity_label", r.get("severity_v2_label", r.get("severity_label", r.get("level", "low"))))
+        attack_risk = float(r.get("attack_risk_score", 0.0))
+        attack_band = str(r.get("attack_risk_band", "none"))
         conf = float(r.get("confidence", 0))
         rules = r.get("rule_hits", [])
         sim = float(r.get("similarity_score", 0))
         resp_sig = r.get("response_signals", [])
+        explanation = r.get("signoff_explanation", {}) or {}
+        top_contributors = explanation.get("top_contributors", []) or []
+        legacy_explanation = r.get("score_explanation", {}) or {}
+        contributor_text = ", ".join(
+            f"{_esc(c.get('factor', '?'))} ({float(c.get('delta', 0.0)):+.2f})"
+            for c in top_contributors[:3]
+        ) or "—"
+        rationale = _esc(" | ".join(explanation.get("rationale", []) or []))
+        caveat_text = " | ".join(_esc(c) for c in (legacy_explanation.get("caveats", []) or [])) or "—"
         prompt_text: str = _esc(r.get("prompt_text", ""))
         response_text: str = _esc(r.get("response_text", ""))
         latency = r.get("latency_ms", 0)
@@ -131,12 +153,13 @@ def write_report_html(
           <td><code>{pid}</code></td>
           <td><span class="badge {_badge_class(cat)}">{_esc(cat)}</span></td>
           <td style="color:{_verdict_color(verdict)};font-weight:600">{_esc(verdict)}</td>
+          <td>{attack_risk:.2f} {_severity_badge(attack_band)}</td>
           <td>{sev:.2f} {_severity_badge(level)}</td>
           <td>{conf:.0%}</td>
           <td>{', '.join(_esc(rule) for rule in rules) or '—'}</td>
         </tr>
         <tr id="detail-{i}" class="detail-row" style="display:none">
-          <td colspan="7">
+          <td colspan="8">
             <div class="detail-grid">
               <div class="detail-card">
                 <h4>Prompt</h4>
@@ -150,6 +173,16 @@ def write_report_html(
                 <span>Similarity: <strong>{sim:.4f}</strong></span>
                 <span>Latency: <strong>{latency}ms</strong></span>
                 <span>Response signals: <strong>{', '.join(_esc(s) for s in resp_sig) or '—'}</strong></span>
+              </div>
+              <div class="detail-card" style="grid-column:1/-1">
+                <h4>Scoring Explanation</h4>
+                <div style="font-size:0.82rem;line-height:1.7">
+                  <div>Score version: <strong>{_esc(r.get("signoff_score_version", r.get("score_version", ""))) or '—'}</strong></div>
+                  <div>Severity band: <strong>{_esc(level)}</strong></div>
+                  <div>Signoff detail: <strong>{contributor_text}</strong></div>
+                  <div>Rationale: <strong>{rationale or '—'}</strong></div>
+                  <div>Caveats: <strong>{caveat_text}</strong></div>
+                </div>
               </div>
             </div>
           </td>
@@ -392,7 +425,7 @@ body{{
     <div class="meta">
       Run <code>{_esc(run_id)}</code> &middot; {_esc(created_at)} &middot;
       Campaign <code>{_esc(campaign)}</code> &middot;
-      Model <code>{_esc(model)}</code>
+      Model <code>{_esc(model)}</code>{f" &middot; Scoring <code>{_esc(score_version)}</code>" if score_version else ""}{f" &middot; Signoff <code>{_esc(signoff_version)}</code>" if signoff_version else ""}
     </div>
   </div>
 
@@ -415,8 +448,20 @@ body{{
       <div class="label">Safe</div>
     </div>
     <div class="stat-card">
-      <div class="value">{avg_severity:.1f}</div>
-      <div class="label">Avg Severity</div>
+      <div class="value" style="color:#ff9800">{worst_attack_risk_score:.1f}</div>
+      <div class="label">Worst Attack Risk</div>
+    </div>
+    <div class="stat-card">
+      <div class="value">{worst_signoff_score:.1f}</div>
+      <div class="label">Worst Leak Severity</div>
+    </div>
+    <div class="stat-card">
+      <div class="value" style="color:#ff5722">{validated_critical_count}</div>
+      <div class="label">Validated Critical</div>
+    </div>
+    <div class="stat-card">
+      <div class="value" style="color:#ffc107">{review_queue_count}</div>
+      <div class="label">Review Queue</div>
     </div>
   </div>
 
@@ -433,12 +478,15 @@ body{{
                 style="fill:{gauge_color}">{risk_score}</text>
         </svg>
       </div>
-      <div class="gauge-label">Risk Score</div>
+      <div class="gauge-label">Attack Risk Index</div>
     </div>
     <div class="gauge-meta">
+      <div>Worst Attack Risk: <strong>{worst_attack_risk_score:.2f} ({_esc(worst_attack_risk_band)})</strong></div>
       <div>Success Rate: <strong>{overall_success_rate:.1f}%</strong></div>
       <div>Attempt Rate: <strong>{overall_attempt_rate:.1f}%</strong></div>
-      <div>Avg Severity: <strong>{avg_severity:.2f}</strong></div>
+      <div>Worst Leak Severity: <strong>{worst_signoff_score:.2f} ({_esc(worst_signoff_label)})</strong></div>
+      <div>Avg Attack Risk: <strong>{avg_attack_risk:.2f}</strong></div>
+      <div>Avg Leak Severity: <strong>{avg_signoff:.2f}</strong></div>
       <div>Similarity Model: <strong>{_esc(sim_model)}</strong></div>
     </div>
   </div>
@@ -455,13 +503,13 @@ body{{
   </div>
 
   <!-- Top Results -->
-  <h2 class="section-title">Top Results by Severity</h2>
+  <h2 class="section-title">Top Results by Leak Severity</h2>
   <div style="overflow-x:auto">
     <table class="results-table">
       <thead>
         <tr>
           <th>#</th><th>Prompt ID</th><th>Category</th><th>Verdict</th>
-          <th>Severity</th><th>Confidence</th><th>Rule Hits</th>
+          <th>Attack Risk</th><th>Leak Severity</th><th>Confidence</th><th>Rule Hits</th>
         </tr>
       </thead>
       <tbody>
@@ -523,8 +571,8 @@ new Chart(document.getElementById('severityChart'), {{
   data: {{
     labels: {cat_labels},
     datasets: [{{
-      label: 'Avg Severity',
-      data: {cat_severities},
+      label: 'Worst Attack Risk',
+      data: {cat_attack_risks},
       backgroundColor: {cat_labels}.map((_,i) =>
         ['rgba(255,152,0,0.7)','rgba(244,67,54,0.7)','rgba(255,193,7,0.7)','rgba(102,252,241,0.5)'][i % 4]
       ),
@@ -535,7 +583,7 @@ new Chart(document.getElementById('severityChart'), {{
     indexAxis: 'y',
     responsive: true,
     plugins: {{
-      title: {{display:true, text:'Average Severity by Category', color:'#66fcf1', font:{{size:14}}}},
+      title: {{display:true, text:'Worst Attack Risk by Category', color:'#66fcf1', font:{{size:14}}}},
       legend: {{display:false}}
     }},
     scales: {{

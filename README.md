@@ -364,12 +364,26 @@ Scoring is implemented in [src/leakcheck/scoring/score.py](/c:/Users/user/Downlo
 
 Inputs to severity:
 
-- verdict
-- category impact base
-- confidence
-- repeatability
+- attack category
+- final verdict
+- attack rule hits
+- optional rule severity hints
+- detection confidence
+- semantic similarity support
+- response-side signals
+- repeatability across prompt variants when available
 
-Configured thresholds are read from [configs/thresholds.yaml](/c:/Users/user/Downloads/leak-check/leak-check/configs/thresholds.yaml):
+The active scoring policy is defined in [configs/thresholds.yaml](/c:/Users/user/Downloads/leak-check/leak-check/configs/thresholds.yaml) and produces a deterministic CVSS-aligned `0.0` to `10.0` severity score. The model is not raw CVSS vulnerability scoring; it is LeakCheck evidence mapped onto CVSS-like severity bands.
+
+Scoring invariants:
+
+- `safe` always forces severity `0.0`
+- benign safe flows remain `0.0`
+- `attack_attempt` is capped below `attack_success`
+- confidence is bounded support, not severity by itself
+- missing optional signals degrade to `0.0`, they do not inflate the score
+
+Severity bands:
 
 - `low`: `0.1` to `3.9`
 - `medium`: `4.0` to `6.9`
@@ -415,6 +429,10 @@ Each record appended to `results.jsonl` currently contains:
 - `response_signals`
 - `severity`
 - `level`
+- `severity_label`
+- `score_version`
+- `score_components`
+- `score_explanation`
 - `evidence`
 
 ## Web Dashboard

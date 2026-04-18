@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 import requests
+from requests import exceptions as requests_exceptions
 
 from leakcheck.common.schemas import LLMResponseRecord
 
@@ -48,7 +49,7 @@ class LLMClient:
         for attempt in range(self.retries + 1):
             t0 = time.perf_counter()
             try:
-                r = requests.post(self.endpoint, json=payload, timeout=self.timeout_s)
+                r = requests.post(self.endpoint, json=payload, timeout=(10, self.timeout_s))
                 latency_ms = int((time.perf_counter() - t0) * 1000)
 
                 # If LM Studio returns 400, we want the body because it explains exactly what's wrong.
@@ -61,7 +62,7 @@ class LLMClient:
                 text = ""
                 try:
                     text = data["choices"][0]["message"]["content"]
-                except Exception:
+                except (KeyError, IndexError, TypeError):
                     # Fallback: older/simple formats
                     text = (
                         (data.get("text") if isinstance(data, dict) else None)
@@ -81,6 +82,14 @@ class LLMClient:
                     raw=data if isinstance(data, dict) else {"raw": data},
                 )
 
+            except requests_exceptions.ReadTimeout as e:
+                last_err = RuntimeError(
+                    f"LLM read timed out after {self.timeout_s}s at {self.endpoint}. "
+                    "Increase llm.timeout_s or reduce the local model workload."
+                )
+                if attempt < self.retries:
+                    continue
+                raise RuntimeError(f"LLM request failed after retries: {last_err}") from e
             except Exception as e:
                 last_err = e
                 if attempt < self.retries:

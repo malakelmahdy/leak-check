@@ -30,7 +30,7 @@ attack:
 llm:
   provider: "lmstudio_openai_compat"
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
-  timeout_s: 60
+  timeout_s: 360
   retries: 2
   params:
     model: "llama-3.2-3b-instruct"

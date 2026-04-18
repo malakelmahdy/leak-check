@@ -7,13 +7,13 @@ that wrap the existing leakcheck pipeline.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
-import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import yaml  # type: ignore[import]
 import requests  # type: ignore[import]
@@ -24,6 +24,7 @@ from flask import Flask, jsonify, request, render_template, send_from_directory 
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent.parent.parent  # leak-check/
+DEFAULT_SIMILARITY_MODEL = str(PROJECT_ROOT / "model" / "best_model")
 
 app = Flask(
     __name__,
@@ -37,6 +38,9 @@ _jobs: dict[str, dict[str, Any]] = {}
 # Default LLM endpoint
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://127.0.0.1:1234/v1/chat/completions")
 DEFAULT_MODEL = os.environ.get("LLM_MODEL", "llama-3.2-3b-instruct")
+LLM_TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "180"))
+logger = logging.getLogger(__name__)
+VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +48,66 @@ DEFAULT_MODEL = os.environ.get("LLM_MODEL", "llama-3.2-3b-instruct")
 # ---------------------------------------------------------------------------
 def _runs_dir() -> Path:
     return PROJECT_ROOT / "data" / "runs"
+
+
+def _chat_detector():
+    """Return a fresh Detector for each call.
+
+    Model weights are cached globally by _load_embedding_model so there is no
+    per-request model reload cost.  The Detector itself is intentionally NOT
+    cached so that:
+      - configuration changes (thresholds.yaml) take effect immediately,
+      - the semantic index is rebuilt from the current static anchors,
+      - no stale state leaks between requests.
+    """
+    from leakcheck.detect.detector import Detector  # type: ignore[import]
+
+    return Detector(
+        similarity_model=DEFAULT_SIMILARITY_MODEL,
+        similarity_threshold=0.50,
+        use_learned=False,
+        learned_path=None,
+    )
+
+
+def _score_detection(det: "DetectionResult", repeatability: float | None = None) -> dict[str, Any]:
+    from leakcheck.scoring.score import compute_severity, score_output_fields  # type: ignore[import]
+
+    score = compute_severity(det, repeatability=repeatability)
+
+    return {
+        "category": det.category,
+        "verdict": det.verdict,
+        "confidence": det.confidence,
+        "rule_hits": det.rule_hits,
+        "similarity_score": det.similarity_score,
+        "response_signals": det.response_signals,
+        "evidence": det.evidence,
+        **score_output_fields(score),
+    }
+
+
+def _empty_detection_payload(category: str, error: str) -> dict[str, Any]:
+    return {
+        "category": category,
+        "verdict": "error",
+        "error": error,
+        "confidence": 0.0,
+        "rule_hits": [],
+        "similarity_score": 0.0,
+        "response_signals": [],
+        "severity": 0.0,
+        "level": "low",
+        "attack_risk_score": 0.0,
+        "attack_risk_band": "none",
+        "attack_risk_rationale": [],
+        "signoff_severity": 0.0,
+        "signoff_severity_label": "none",
+        "leak_severity_score": 0.0,
+        "leak_severity_band": "none",
+        "leak_severity_rationale": [],
+        "evidence": {"error": error},
+    }
 
 
 def _list_runs() -> list[dict[str, Any]]:
@@ -80,6 +144,12 @@ def _list_runs() -> list[dict[str, Any]]:
                 with summary_file.open("r", encoding="utf-8") as f:
                     summary = json.load(f)
                 run_info["total"] = summary.get("total", 0)
+                run_info["worst_signoff_score"] = summary.get("worst_signoff_score", 0.0)
+                run_info["worst_signoff_label"] = summary.get("worst_signoff_label", "none")
+                run_info["worst_attack_risk_score"] = summary.get("worst_attack_risk_score", 0.0)
+                run_info["worst_attack_risk_band"] = summary.get("worst_attack_risk_band", "none")
+                run_info["validated_critical_count"] = summary.get("validated_critical_count", 0)
+                run_info["review_queue_count"] = summary.get("review_queue_count", 0)
                 by_cat = summary.get("by_category", {})
                 run_info["successes"] = sum(c.get("successes", 0) for c in by_cat.values())
                 run_info["attempts"] = sum(c.get("attempts", 0) for c in by_cat.values())
@@ -87,7 +157,7 @@ def _list_runs() -> list[dict[str, Any]]:
                 total = run_info["total"]
                 run_info["success_rate"] = round(run_info["successes"] / total * 100, 1) if total else 0
             except Exception:
-                pass
+                logger.debug("Failed to parse run summary for %s", d, exc_info=True)
 
         if config_file.exists():
             try:
@@ -96,7 +166,7 @@ def _list_runs() -> list[dict[str, Any]]:
                 run_info["campaign_name"] = cfg.get("run", {}).get("name", "—")
                 run_info["model"] = cfg.get("llm", {}).get("params", {}).get("model", "—")
             except Exception:
-                pass
+                logger.debug("Failed to parse run config for %s", d, exc_info=True)
 
         runs.append(run_info)
 
@@ -113,7 +183,7 @@ def _call_llm(prompt: str, model: str | None = None) -> dict[str, Any]:
         "max_tokens": 1024,
     }
     try:
-        resp = requests.post(LLM_ENDPOINT, json=payload, timeout=60)
+        resp = requests.post(LLM_ENDPOINT, json=payload, timeout=(10, LLM_TIMEOUT_S))
         resp.raise_for_status()
         data = resp.json()
         # OpenAI-compatible format
@@ -124,43 +194,36 @@ def _call_llm(prompt: str, model: str | None = None) -> dict[str, Any]:
             text = data.get("text") or data.get("response") or str(data)
         return {"text": text, "raw": data}
     except Exception as e:
-        return {"text": f"Error: {e}", "error": str(e)}
+        logger.warning("LLM call failed for model %s", model, exc_info=True)
+        return {"text": "", "error": str(e)}
 
 
-def _detect_prompt(prompt: str, response: str) -> dict[str, Any]:
+def _detect_prompt(prompt: str, response: str, category: str = "unknown") -> dict[str, Any]:
     """Run detection pipeline on a single prompt/response pair."""
     try:
-        from leakcheck.detect.detector import Detector  # type: ignore[import]
-        from leakcheck.scoring.score import load_thresholds, severity_level, compute_severity  # type: ignore[import]
-
-        detector = Detector(
-            similarity_model="all-MiniLM-L6-v2",
-            similarity_threshold=0.50,
-            use_learned=False,
-            learned_path=None,
-        )
-        det = detector.detect(
+        det = _chat_detector().detect(
             prompt_id="chat_msg",
-            category="unknown",
+            category=category,
             prompt_text=prompt,
             response_text=response,
         )
-
-        thresholds = load_thresholds(str(PROJECT_ROOT / "configs" / "thresholds.yaml"))
-        score = compute_severity(det, repeatability=1.0)
-        score.level = severity_level(thresholds, score.severity)
-
-        return {
-            "verdict": det.verdict,
-            "confidence": det.confidence,
-            "rule_hits": det.rule_hits,
-            "similarity_score": det.similarity_score,
-            "response_signals": det.response_signals,
-            "severity": round(score.severity, 2),
-            "level": score.level,
-        }
+        return _score_detection(det, repeatability=None)
     except Exception as e:
-        return {"verdict": "error", "error": str(e), "severity": 0, "level": "low"}
+        logger.exception("Detection failed for category %s", category)
+        return _empty_detection_payload(category, str(e))
+
+
+def _precheck_prompt(prompt: str) -> dict[str, Any]:
+    """Classify a prompt before it reaches the LLM."""
+    try:
+        det = _chat_detector().classify_prompt(
+            prompt_id="chat_msg",
+            prompt_text=prompt,
+        )
+        return _score_detection(det, repeatability=None)
+    except Exception as e:
+        logger.exception("Prompt precheck failed")
+        return _empty_detection_payload("unknown", str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +286,54 @@ def api_chat():
     if not prompt:
         return jsonify({"error": "Empty message"}), 400
 
+    precheck = _precheck_prompt(prompt)
+
+    # Resolve the best attack category from precheck evidence so detect() uses
+    # the right rule set and anchor embeddings regardless of whether blocked.
+    detect_category = str(
+        (precheck.get("evidence") or {}).get("best_candidate_category")
+        or precheck.get("category")
+        or "unknown"
+    )
+
+    if precheck.get("verdict") == "error":
+        return jsonify({
+            "error": "Prompt safety precheck failed.",
+            "detection": precheck,
+            "model": model,
+        }), 500
+
+    if precheck.get("verdict") == "attack_attempt":
+        # Run full detect() with empty response so the detection panel always
+        # shows complete evidence (static + dynamic rule hits, scoring) rather
+        # than precheck-only data.
+        detection = _detect_prompt(prompt, "", category=detect_category)
+        return jsonify({
+            "reply": "Blocked: this prompt was classified as unsafe and was not sent to the LLM.",
+            "detection": detection,
+            "model": model,
+            "blocked": True,
+        }), 403
+
     # Call LLM
     llm_result = _call_llm(prompt, model)
+    if llm_result.get("error"):
+        detection = {
+            **precheck,
+            "error": str(llm_result["error"]),
+            "evidence": {
+                **dict(precheck.get("evidence") or {}),
+                "llm_error": str(llm_result["error"]),
+            },
+        }
+        return jsonify({
+            "error": "LLM request failed.",
+            "detection": detection,
+            "model": model,
+        }), 502
     response_text = llm_result.get("text", "")
 
-    # Run detection
-    detection = _detect_prompt(prompt, response_text)
+    detection = _detect_prompt(prompt, response_text, category=detect_category)
 
     return jsonify({
         "reply": response_text,
@@ -277,11 +382,11 @@ def api_campaign_run():
             from leakcheck.attack.mutate import mutate_prompt  # type: ignore[import]
             from leakcheck.llm.client import LLMClient  # type: ignore[import]
             from leakcheck.detect.detector import Detector  # type: ignore[import]
-            from leakcheck.scoring.score import load_thresholds, severity_level, compute_severity  # type: ignore[import]
+            from leakcheck.scoring.score import compute_severity, load_scoring_policy, score_output_fields  # type: ignore[import]
             from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
             from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
             from leakcheck.reporting.report_html import write_report_html  # type: ignore[import]
-            from leakcheck.common.schemas import PromptRecord, MutationRecord  # type: ignore[import]
+            from leakcheck.common.schemas import DetectionResult, LLMResponseRecord, MutationRecord, PromptRecord  # type: ignore[import]
 
             # Create run folder
             output_root = resolve_project_path(cfg["run"]["output_root"])
@@ -320,13 +425,12 @@ def api_campaign_run():
             llm_params = dict(cfg["llm"].get("params", {}))
             det_cfg = cfg.get("detection", {})
             detector = Detector(
-                similarity_model=resolve_project_path(det_cfg["similarity_model"]) if det_cfg.get("similarity_model") else "all-MiniLM-L6-v2",
+                similarity_model=resolve_project_path(det_cfg["similarity_model"]) if det_cfg.get("similarity_model") else DEFAULT_SIMILARITY_MODEL,
                 similarity_threshold=float(det_cfg.get("similarity_threshold", 0.50)),
                 use_learned=bool(det_cfg.get("use_learned_anchors", False)),
                 learned_path=resolve_project_path(str(det_cfg["learned_anchors_path"])) if det_cfg.get("learned_anchors_path") else None,
             )
-            thresholds = load_thresholds(resolve_project_path(cfg["scoring"]["thresholds_file"]))
-
+            scoring_policy = load_scoring_policy(resolve_project_path(cfg["scoring"]["thresholds_file"]))
             attack_enabled = bool(cfg.get("attack", {}).get("enabled", True))
         
             # Resolve operators from level if provided, otherwise use explicit list
@@ -369,7 +473,8 @@ def api_campaign_run():
                         operators=[], text=p.text, seed=seed,
                     ))
 
-                det_flags = []
+                success_flags: list[int] = []
+                variant_runs: list[VariantRun] = []
                 for m in mutation_records:
                     prompt_id = m.mutation_id
 
@@ -384,16 +489,16 @@ def api_campaign_run():
                         prompt_text=m.text,
                         response_text=llm_resp.response_text,
                     )
-                    det_flags.append(1 if det.verdict in ("attack_attempt", "attack_success") else 0)
-                    tmp_repeat = sum(det_flags) / max(1, len(det_flags))
+                    success_flags.append(1 if det.verdict == "attack_success" else 0)
+                    variant_runs.append((m, llm_resp, det))
 
-                    # Score
-                    score = compute_severity(det, repeatability=tmp_repeat)
-                    score.level = severity_level(thresholds, score.severity)
+                final_repeatability = sum(success_flags) / max(1, len(success_flags))
 
+                for m, llm_resp, det in variant_runs:
+                    score = compute_severity(det, repeatability=final_repeatability, policy=scoring_policy)
                     record = {
                         "base_id": p.id,
-                        "prompt_id": prompt_id,
+                        "prompt_id": m.mutation_id,
                         "category": p.category,
                         "operators": m.operators,
                         "prompt_text": m.text,
@@ -407,9 +512,8 @@ def api_campaign_run():
                         "rule_hits": det.rule_hits,
                         "similarity_score": det.similarity_score,
                         "response_signals": det.response_signals,
-                        "severity": score.severity,
-                        "level": score.level,
                         "evidence": det.evidence,
+                        **score_output_fields(score),
                     }
                     append_jsonl(results_path, record)
                     all_results.append(record)
@@ -438,6 +542,7 @@ def api_campaign_run():
             _jobs[job_id]["run_dir"] = run_dir.name
 
         except Exception as e:
+            logger.exception("Campaign job %s failed", job_id)
             _jobs[job_id]["status"] = "error"
             _jobs[job_id]["error"] = str(e)
 

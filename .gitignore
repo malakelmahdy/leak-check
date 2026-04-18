@@ -1,13 +1,77 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+MANIFEST
+
+# ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
 env/
 ENV/
 
-__pycache__/
-*.py[cod]
-
-*.egg-info/
-
-data/runs/
-
+# ── ML models (large binaries — use Git LFS or separate storage) ──────────────
 model/
+
+# ── Run outputs (results, reports generated at runtime) ──────────────────────
+data/runs/
+data/processed/
+data/reports/
+data/test_report_outputs/
+data/pytest_tmp/
+
+# ── Secrets & credentials ─────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+*.key
+*.pem
+secrets.*
+*_secret*
+*_token*
+api_keys.*
+
+# ── Zip / archive dumps ───────────────────────────────────────────────────────
+*.zip
+*.tar.gz
+*.tar
+*.gz
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS artifacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Pytest / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.pytest_tmp/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# ── Mypy / type checkers ──────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ── Claude Code internal (not project source) ────────────────────────────────
+.claude/
+
+# ── Keep these data files (input datasets & learned anchors) ─────────────────
+# data/raw/        → tracked (prompt datasets needed for CI / demo)
+# data/interim/    → tracked (learned_attacks.jsonl evolves with training)
