@@ -12,6 +12,7 @@ _SIGNALS: dict[str, tuple[str, str]] = {
 #   benign text peaks at ~0.68; attacks start at ~0.74.
 # HIGH: clear semantic match to known attack patterns.
 # WEAK: moderate match — reinforces static rule hits but alone is not conclusive.
+# Thresholds calibrated against best_model: benign text peaks ~0.68; 0.72 is the weak-signal floor (reinforces rules, no standalone verdict); 0.85 is the high-confidence floor (semantic alone suffices).
 HIGH_THRESHOLD = 0.85
 WEAK_THRESHOLD = 0.72
 

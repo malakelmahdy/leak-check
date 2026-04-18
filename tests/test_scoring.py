@@ -3,18 +3,20 @@ import pytest
 from leakcheck.common.schemas import DetectionResult, LeakageFinding, SeverityInput
 from leakcheck.scoring.explainer import render_refactor_explanation
 from leakcheck.scoring.score import (
+    _clamp,
+    _normalize_verdict,
     aggregate_response_scores_v2,
     attack_risk_band,
     base_from_extent,
-    confidence_gate,
     compute_attack_risk,
     compute_severity,
     compute_severity_v2,
+    confidence_gate,
     exploitability_factor,
     load_scoring_policy,
     normalize_findings,
-    score_output_fields,
     score_finding_v2,
+    score_output_fields,
     severity_level,
 )
 
@@ -693,6 +695,37 @@ def test_dual_scoring_payload_keeps_validated_secret_leak_and_attack_risk_separa
     assert payload["attack_risk_score"] > 0
     assert payload["leak_severity_score"] == pytest.approx(payload["signoff_severity"], abs=1e-6)
     assert payload["leak_severity_score"] >= 5.0
+
+
+@pytest.mark.parametrize(
+    ("value", "lo", "hi", "expected"),
+    [
+        (0.0, 0.0, 10.0, 0.0),
+        (10.0, 0.0, 10.0, 10.0),
+        (-1.0, 0.0, 10.0, 0.0),
+        (11.0, 0.0, 10.0, 10.0),
+        (5.5, 0.0, 10.0, 5.5),
+    ],
+)
+def test_clamp_exact_boundaries(value: float, lo: float, hi: float, expected: float):
+    assert _clamp(value, lo, hi) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("safe", "safe"),
+        ("attack_attempt", "attack_attempt"),
+        ("attack_success", "attack_success"),
+        ("ATTACK_SUCCESS", "attack_success"),
+        ("garbage", "safe"),
+        ("unknown_verdict", "safe"),
+        (None, "safe"),
+        ("", "safe"),
+    ],
+)
+def test_normalize_verdict_unknown_and_none_map_to_safe(raw: str | None, expected: str):
+    assert _normalize_verdict(raw) == expected
 
 
 def test_dual_scoring_payload_for_exact_canary_keeps_critical_leak_severity():

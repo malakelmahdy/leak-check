@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 from leakcheck.common.schemas import DetectionResult  # type: ignore[import]
+from leakcheck.detect.dynamic import dynamic_signals  # type: ignore[import]
+from leakcheck.detect.response_signals import response_signals  # type: ignore[import]
 from leakcheck.detect.rules import rule_detect  # type: ignore[import]
 from leakcheck.detect.semantic import (  # type: ignore[import]
     SemanticIndex,
+    append_learned_anchor,
     build_semantic_index,
     max_similarity,
-    append_learned_anchor,
     sanitize_for_similarity,
 )
-from leakcheck.detect.dynamic import dynamic_signals  # type: ignore[import]
-from leakcheck.detect.response_signals import response_signals  # type: ignore[import]
 from leakcheck.validators import build_validated_findings  # type: ignore[import]
 
 ATTACK_CATEGORIES = ("prompt_injection", "jailbreak", "data_exfil")
@@ -37,6 +37,12 @@ _IMPERATIVE_RE = re.compile(r"\b(ignore|reveal|show|display|print|output|dump|ex
 
 @dataclass
 class Detector:
+    """Orchestrates rule-based, semantic, and response-signal detection.
+
+    Caches one SemanticIndex per attack category; supports optional
+    learned-anchor capture to improve future runs.
+    """
+
     similarity_model: str
     similarity_threshold: float
     use_learned: bool
@@ -194,7 +200,7 @@ class Detector:
 
         return benign_ctx, static_rules, dyn_rules, float(sim), semantic_meta
 
-    def _get_index(self, category: str):
+    def _get_index(self, category: str) -> SemanticIndex:
         if category not in self._idx_cache:
             self._idx_cache[category] = build_semantic_index(
                 self.similarity_model, category, self.learned_path, self.use_learned
@@ -202,6 +208,11 @@ class Detector:
         return self._idx_cache[category]
 
     def classify_prompt(self, prompt_id: str, prompt_text: str) -> DetectionResult:
+        """Classify a prompt without a model response.
+
+        Scans all attack categories and returns the highest-scoring
+        DetectionResult. Used for pre-response blocking in the web chat.
+        """
         best_category = "benign"
         best_static_rules: list[str] = []
         best_dyn_rules: list[str] = []
@@ -210,6 +221,7 @@ class Detector:
         best_similarity = 0.0
         best_score = -1.0
 
+        # Scan all categories regardless of declared one: prompt intent may cross category boundaries (e.g., a "benign" prompt that's actually a jailbreak).
         for category in ATTACK_CATEGORIES:
             benign_ctx, static_rules, dyn_rules, sim, semantic_meta = self._prompt_attempt_for_category(category, prompt_text)
             attack_rules = static_rules + dyn_rules
@@ -283,6 +295,13 @@ class Detector:
         )
 
     def detect(self, prompt_id: str, category: str, prompt_text: str, response_text: str) -> DetectionResult:
+        """Run full detection on a prompt/response pair.
+
+        Combines static rules, semantic similarity, and response signals to
+        produce a 3-state verdict (safe/attack_attempt/attack_success).
+        Appends qualifying prompts to the learned-anchor file when
+        use_learned is enabled.
+        """
         benign_ctx_tags, static_rules, dyn_rules, sim, semantic_meta = self._prompt_attempt_for_category(category, prompt_text)
         attack_rules = static_rules + dyn_rules
         rules = benign_ctx_tags + attack_rules
@@ -332,6 +351,7 @@ class Detector:
         }
 
         # --- Over-refusal detection ---
+        # Over-refusal only triggers on static-rule-free verdicts: avoids false-alarm on weak semantic matches, which can't be trusted as ground truth.
         is_refusal = "RS_REFUSAL" in rs
         is_over_refusal = (
             verdict == "safe"
@@ -392,6 +412,7 @@ class Detector:
         )
 
         # --- learned anchors policy ---
+        # Append-only: newly-learned anchors take effect on the next index rebuild, not the current run.
         if verdict in ("attack_success", "attack_attempt") and self.use_learned and self.learned_path:
             if not benign_ctx:
                 sanitized = sanitize_for_similarity(prompt_text)

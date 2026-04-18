@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -8,9 +9,18 @@ from requests import exceptions as requests_exceptions
 
 from leakcheck.common.schemas import LLMResponseRecord
 
+logger = logging.getLogger(__name__)
+
 
 class LLMClient:
+    """HTTP client for OpenAI-compatible chat completion endpoints.
+
+    Handles retry on timeout, tolerant response parsing (OpenAI format + text/response/output fallbacks),
+    and latency measurement.
+    """
+
     def __init__(self, endpoint: str, timeout_s: int = 60, retries: int = 2):
+        """Configure the client with endpoint URL, per-request timeout in seconds, and max retry count."""
         self.endpoint = endpoint
         self.timeout_s = timeout_s
         self.retries = retries
@@ -70,6 +80,12 @@ class LLMClient:
                         or (data.get("output") if isinstance(data, dict) else None)
                         or ""
                     )
+                    if not text:
+                        logger.warning(
+                            "LLM response format unrecognized — no text extracted. "
+                            "Keys present: %s",
+                            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                        )
 
                 if not isinstance(text, str):
                     text = str(text)

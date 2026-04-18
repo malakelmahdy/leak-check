@@ -3,9 +3,8 @@ from __future__ import annotations
 import random
 from typing import Callable
 
-from leakcheck.common.schemas import PromptRecord, MutationRecord
 from leakcheck.attack import operators as ops
-
+from leakcheck.common.schemas import MutationRecord, PromptRecord
 
 OP_MAP: dict[str, Callable[[str, random.Random], str]] = {
     # attack-style
@@ -52,10 +51,16 @@ def _filter_ops_for_category(category: str, operators: list[str]) -> list[str]:
 
 
 def mutate_prompt(base: PromptRecord, operators: list[str], seed: int, idx: int) -> MutationRecord:
+    """Apply mutation operators to a base prompt, filtered by category.
+
+    Benign prompts only receive benign-safe operators; all others receive attack operators.
+    Seed + idx ensures deterministic reproducibility across runs.
+    """
     rng = random.Random(seed + idx * 99991)
     text = base.text
 
     # ✅ Policy: benign prompts do NOT receive attack-style wrappers.
+    # Unknown categories default to attack operators — a misconfigured benign category will silently receive attack mutations.
     filtered_ops = _filter_ops_for_category(base.category, operators)
 
     applied: list[str] = []

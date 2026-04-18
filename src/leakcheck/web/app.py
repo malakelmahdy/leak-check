@@ -15,9 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeAlias
 
-import yaml  # type: ignore[import]
 import requests  # type: ignore[import]
-from flask import Flask, jsonify, request, render_template, send_from_directory  # type: ignore[import]
+import yaml  # type: ignore[import]
+from flask import Flask, jsonify, render_template, request, send_from_directory  # type: ignore[import]
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -40,7 +40,7 @@ LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://127.0.0.1:1234/v1/chat/com
 DEFAULT_MODEL = os.environ.get("LLM_MODEL", "llama-3.2-3b-instruct")
 LLM_TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "180"))
 logger = logging.getLogger(__name__)
-VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]
+VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]  # noqa: F821
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ def _chat_detector():
     )
 
 
-def _score_detection(det: "DetectionResult", repeatability: float | None = None) -> dict[str, Any]:
+def _score_detection(det: "DetectionResult", repeatability: float | None = None) -> dict[str, Any]:  # noqa: F821
     from leakcheck.scoring.score import compute_severity, score_output_fields  # type: ignore[import]
 
     score = compute_severity(det, repeatability=repeatability)
@@ -157,7 +157,7 @@ def _list_runs() -> list[dict[str, Any]]:
                 total = run_info["total"]
                 run_info["success_rate"] = round(run_info["successes"] / total * 100, 1) if total else 0
             except Exception:
-                logger.debug("Failed to parse run summary for %s", d, exc_info=True)
+                logger.warning("Failed to parse run summary for %s", d, exc_info=True)
 
         if config_file.exists():
             try:
@@ -166,7 +166,7 @@ def _list_runs() -> list[dict[str, Any]]:
                 run_info["campaign_name"] = cfg.get("run", {}).get("name", "—")
                 run_info["model"] = cfg.get("llm", {}).get("params", {}).get("model", "—")
             except Exception:
-                logger.debug("Failed to parse run config for %s", d, exc_info=True)
+                logger.warning("Failed to parse run config for %s", d, exc_info=True)
 
         runs.append(run_info)
 
@@ -375,18 +375,30 @@ def api_campaign_run():
                 cfg.setdefault("run", {})["name"] = data["campaign_name"]
 
             # Run the pipeline (reuse CLI logic inline)
-            from leakcheck.common.run_utils import create_run_folder, save_config_snapshot, copy_dataset_snapshot, append_jsonl, save_json  # type: ignore[import]
-            from leakcheck.common.run_utils import resolve_project_path  # type: ignore[import]
-            from leakcheck.common.log_utils import log_line  # type: ignore[import]
-            from leakcheck.datasets.ingest import ingest_local_jsonl, ingest_local_csv  # type: ignore[import]
             from leakcheck.attack.mutate import mutate_prompt  # type: ignore[import]
-            from leakcheck.llm.client import LLMClient  # type: ignore[import]
+            from leakcheck.common.log_utils import log_line  # type: ignore[import]
+            from leakcheck.common.run_utils import (  # type: ignore[import]
+                append_jsonl,
+                copy_dataset_snapshot,
+                create_run_folder,
+                resolve_project_path,  # type: ignore[import]
+                save_config_snapshot,
+                save_json,
+            )
+            from leakcheck.common.schemas import (  # type: ignore[import]
+                MutationRecord,
+            )
+            from leakcheck.datasets.ingest import ingest_local_csv, ingest_local_jsonl  # type: ignore[import]
             from leakcheck.detect.detector import Detector  # type: ignore[import]
-            from leakcheck.scoring.score import compute_severity, load_scoring_policy, score_output_fields  # type: ignore[import]
-            from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
-            from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
+            from leakcheck.llm.client import LLMClient  # type: ignore[import]
             from leakcheck.reporting.report_html import write_report_html  # type: ignore[import]
-            from leakcheck.common.schemas import DetectionResult, LLMResponseRecord, MutationRecord, PromptRecord  # type: ignore[import]
+            from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
+            from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
+            from leakcheck.scoring.score import (  # type: ignore[import]
+                compute_severity,
+                load_scoring_policy,
+                score_output_fields,
+            )
 
             # Create run folder
             output_root = resolve_project_path(cfg["run"]["output_root"])
@@ -432,11 +444,11 @@ def api_campaign_run():
             )
             scoring_policy = load_scoring_policy(resolve_project_path(cfg["scoring"]["thresholds_file"]))
             attack_enabled = bool(cfg.get("attack", {}).get("enabled", True))
-        
+
             # Resolve operators from level if provided, otherwise use explicit list
             level = int(cfg.get("attack", {}).get("mutation_level", 0))
             ops = list(cfg.get("attack", {}).get("operators", []))
-            
+
             # If level is set (e.g. from UI slider), it overrides the default config operators
             if level > 0:
                 benign_base = ["benign_rephrase_prefix", "benign_wrapper"]
@@ -450,7 +462,7 @@ def api_campaign_run():
                     ops = ["format_shift", "obfuscate_spacing", "prefix_injection", "role_wrapper"] + benign_base
                 elif level >= 5:
                     ops = ["format_shift", "obfuscate_spacing", "prefix_injection", "role_wrapper", "instruction_stack"] + benign_base
-            
+
             # Ensure we have at least one operator if level was requested but no mapping found
             if level > 0 and not ops:
                  ops = ["format_shift"] + ["benign_rephrase_prefix"]

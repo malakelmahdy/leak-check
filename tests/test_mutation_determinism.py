@@ -1,5 +1,6 @@
-from leakcheck.common.schemas import PromptRecord
 from leakcheck.attack.mutate import mutate_prompt
+from leakcheck.common.schemas import PromptRecord
+
 
 def test_mutation_determinism():
     base = PromptRecord(id="p", category="c", text="Hello")

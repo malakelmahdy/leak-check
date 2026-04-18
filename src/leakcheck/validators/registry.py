@@ -1,10 +1,10 @@
+"""Validator registry: runs post-detection validators (canary, secret, PII, semantic suspicion) on LLM response text and returns structured LeakageFinding objects."""
 from __future__ import annotations
 
 import os
 import re
 
 from leakcheck.common.schemas import DetectorEvidence, LeakageFinding, ValidationResult
-
 
 CANARY_PATTERN = re.compile(r"\b(?:LC_CANARY|CANARY)[A-Z0-9_\-\[\]]{4,}\b", re.I)
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
@@ -273,6 +273,7 @@ def build_validated_findings(
     semantic_degraded: bool = False,
     semantic_error: str | None = None,
 ) -> list[LeakageFinding]:
+    """Run all validators on the LLM response text in order: canary, secret, PII, then semantic-suspicion fallback (triggered only when no other findings exist and similarity >= 0.85). Returns a list of LeakageFinding objects; an empty list means no leakage evidence was found."""
     findings: list[LeakageFinding] = []
     findings.extend(
         _canary_findings(

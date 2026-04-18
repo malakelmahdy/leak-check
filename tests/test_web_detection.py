@@ -1,8 +1,7 @@
-from leakcheck.detect.detector import Detector
 from leakcheck.detect import semantic
+from leakcheck.detect.detector import Detector
 from leakcheck.detect.semantic import build_semantic_index, max_similarity
-from leakcheck.web.app import app, _detect_prompt, _precheck_prompt
-
+from leakcheck.web.app import _detect_prompt, _precheck_prompt, app
 
 TEST_SIMILARITY_MODEL = "model/best_model"
 
@@ -233,8 +232,8 @@ def test_chat_page_type_field_uses_display_type():
 
 def test_finding_summary_excludes_internal_prompt_id():
     """build_findings_from_input must never embed prompt_id in the summary."""
-    from leakcheck.scoring.score import build_findings_from_input
     from leakcheck.common.schemas import SeverityInput
+    from leakcheck.scoring.score import build_findings_from_input
 
     evidence = SeverityInput(
         prompt_id="chat_msg",

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from functools import lru_cache
-from pathlib import Path
 import json
 import logging
 import re
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
+
 try:
     from sentence_transformers import SentenceTransformer, models
     _SENTENCE_TRANSFORMERS_ERROR: Exception | None = None
@@ -16,12 +17,16 @@ except Exception as exc:  # pragma: no cover - import failure path
     SentenceTransformer = Any  # type: ignore[assignment]
     models = None  # type: ignore[assignment]
     _SENTENCE_TRANSFORMERS_ERROR = exc
+    logging.getLogger(__name__).warning(
+        "sentence_transformers unavailable — semantic detection will be disabled: %s", exc
+    )
 
 
 logger = logging.getLogger(__name__)
 
 # De-obfuscation patterns shared with rules.py canonicalization.
 # Applied before encoding so split/mangled tokens are normalised.
+# Patterns are dataset-derived: targets observed split tokens in real attacks. Novel obfuscation not listed here evades de-obfuscation.
 _DEOBF = [
     (re.compile(r"\bpr\s+ompt\b", re.I), "prompt"),
     (re.compile(r"\bin\s+struction(s)?\b", re.I), r"instruction\1"),
@@ -99,6 +104,7 @@ def sanitize_for_similarity(text: str) -> str:
 
 
 def load_learned_anchors(path: str) -> list[str]:
+    """Load attack anchor texts from a JSONL file. Each line must be JSON with a 'text' key. Returns empty list if the file does not exist."""
     p = Path(path)
     if not p.exists():
         return []
@@ -115,6 +121,7 @@ def load_learned_anchors(path: str) -> list[str]:
 
 
 def append_learned_anchor(path: str, text: str) -> None:
+    """Append a new learned attack anchor to the JSONL file. Creates parent directories if absent. Append-only; does not re-embed into any cached index."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
@@ -124,6 +131,8 @@ def append_learned_anchor(path: str, text: str) -> None:
 
 @dataclass
 class SemanticIndex:
+    """Holds a loaded SentenceTransformer model and pre-encoded anchor embeddings for one attack category. Set degraded=True when model loading fails; max_similarity returns 0.0 in that state."""
+
     model_name: str
     model: SentenceTransformer | None
     anchor_texts: list[str]
@@ -236,6 +245,7 @@ def max_similarity(index: SemanticIndex, text: str) -> float:
     Returns the max of the raw and de-obfuscated embeddings' similarities
     so neither form can suppress a high score.
     """
+    # Degraded index returns 0.0 rather than raising; model load failures are logged at build time and silently treated as no semantic signal here.
     if index.degraded or index.model is None:
         return 0.0
     if len(index.anchor_texts) == 0 or index.anchor_embs.size == 0:
@@ -251,6 +261,7 @@ def max_similarity(index: SemanticIndex, text: str) -> float:
 
     if deobf != raw:
         v_deobf = index.model.encode([deobf], normalize_embeddings=True)[0]
+        # Take max of raw and de-obfuscated scores: ensures neither encoding suppresses a high match. An attacker gets two encoding chances, but so does the detector.
         score = max(score, float(np.max(anchors @ v_deobf)))
 
     return score

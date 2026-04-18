@@ -43,6 +43,7 @@ def _score_by_finding(record: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate a list of result dicts (from a detection run) into a summary. Computes per-category stats, top-10 by severity, over-refusal cases, deduplicated findings, and worst signoff/attack-risk scores."""
     total = len(results)
     by_cat = defaultdict(list)
     for r in results:

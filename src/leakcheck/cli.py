@@ -8,26 +8,25 @@ from typing import Any, TypeAlias
 import yaml  # type: ignore[import]
 from rich import print  # type: ignore[import]
 
-from leakcheck.common.run_utils import (  # type: ignore[import]
-    create_run_folder,
-    save_config_snapshot,
-    copy_dataset_snapshot,
-    append_jsonl,
-    save_json,
-    resolve_project_path,
-)
-from leakcheck.common.log_utils import log_line  # type: ignore[import]
-from leakcheck.datasets.ingest import ingest_local_jsonl, ingest_local_csv  # type: ignore[import]
 from leakcheck.attack.mutate import mutate_prompt  # type: ignore[import]
+from leakcheck.common.log_utils import log_line  # type: ignore[import]
+from leakcheck.common.run_utils import (  # type: ignore[import]
+    append_jsonl,
+    copy_dataset_snapshot,
+    create_run_folder,
+    resolve_project_path,
+    save_config_snapshot,
+    save_json,
+)
+from leakcheck.datasets.ingest import ingest_local_csv, ingest_local_jsonl  # type: ignore[import]
 from leakcheck.llm.client import LLMClient  # type: ignore[import]
-from leakcheck.scoring.score import compute_severity, load_scoring_policy, score_output_fields  # type: ignore[import]
-from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
-from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
 from leakcheck.reporting.report_html import write_report_html  # type: ignore[import]
-
+from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
+from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
+from leakcheck.scoring.score import compute_severity, load_scoring_policy, score_output_fields  # type: ignore[import]
 
 DEFAULT_SIMILARITY_MODEL = "model/best_model"
-VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]
+VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]  # noqa: F821
 
 
 def load_yaml(path: str) -> dict[str, Any]:
@@ -36,7 +35,7 @@ def load_yaml(path: str) -> dict[str, Any]:
 
 
 def run_campaign(cfg_path: str) -> None:
-    from leakcheck.common.schemas import DetectionResult, LLMResponseRecord, MutationRecord  # type: ignore[import]
+    from leakcheck.common.schemas import MutationRecord  # type: ignore[import]
     from leakcheck.detect.detector import Detector  # type: ignore[import]
 
     cfg = load_yaml(cfg_path)
@@ -179,9 +178,9 @@ def run_campaign(cfg_path: str) -> None:
 def selftest_semantic() -> None:
     """Quick self-test: show sanitization and similarity for sample prompts."""
     from leakcheck.detect.semantic import (  # type: ignore[import]
-        sanitize_for_similarity,
         build_semantic_index,
         max_similarity,
+        sanitize_for_similarity,
     )
 
     samples = [

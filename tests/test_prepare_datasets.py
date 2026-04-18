@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import uuid
-
+from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare_datasets.py"
 TEST_OUTPUT_ROOT = Path(__file__).resolve().parents[1] / "data" / "test_prepare_datasets"

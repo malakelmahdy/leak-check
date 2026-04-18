@@ -122,6 +122,17 @@ def test_summary_preserves_worst_signoff_score_and_review_counts():
     assert summary["review_queue_count"] == 1
 
 
+def test_summarize_results_empty_list_returns_safe_defaults():
+    summary = summarize_results([])
+
+    assert summary["total"] == 0
+    assert summary["worst_signoff_score"] == 0.0
+    assert summary["worst_signoff_label"] == "none"
+    assert summary["worst_attack_risk_score"] == 0.0
+    assert summary["finding_count"] == 0
+    assert summary["top_10"] == []
+
+
 def test_summary_dedupes_duplicate_findings():
     record = _record()
     record["findings_v2"] = [

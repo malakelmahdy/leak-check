@@ -1,531 +1,343 @@
-# LeakCheck
+# LeakCheck — automated prompt-safety auditing for local LLMs
 
-LeakCheck is a local auditing tool for probing LLM prompt safety. It can:
+## Overview
 
-- load prompt datasets from `jsonl` or `csv`
-- mutate prompts with deterministic attack-style or benign-safe operators
-- send prompts to an OpenAI-compatible chat-completions endpoint
-- classify outcomes as `safe`, `attack_attempt`, or `attack_success`
-- score and summarize results
-- generate Markdown and HTML reports
-- serve a Flask dashboard for running campaigns, browsing reports, and chatting with a model
-
-This README is based on the code currently in this repository. Where behavior is environment-specific or not enforced in code, that is called out explicitly.
-
-## What The Project Contains
-
-- CLI entrypoint: [src/leakcheck/cli.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/cli.py)
-- Prompt mutation logic: [src/leakcheck/attack/mutate.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/attack/mutate.py)
-- Detection pipeline: [src/leakcheck/detect/detector.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/detector.py)
-- Semantic similarity helpers: [src/leakcheck/detect/semantic.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/semantic.py)
-- Rule-based detection: [src/leakcheck/detect/rules.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/rules.py)
-- Response-signal extraction: [src/leakcheck/detect/response_signals.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/response_signals.py)
-- LLM client: [src/leakcheck/llm/client.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/llm/client.py)
-- Scoring: [src/leakcheck/scoring/score.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/scoring/score.py)
-- Reporting: [src/leakcheck/reporting/report_md.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/reporting/report_md.py), [src/leakcheck/reporting/report_html.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/reporting/report_html.py)
-- Web dashboard: [src/leakcheck/web/app.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/web/app.py)
-- Example campaign config: [configs/campaign.yaml](/c:/Users/user/Downloads/leak-check/leak-check/configs/campaign.yaml)
+- Probes LLM endpoints for prompt injection, jailbreak, and data exfiltration vulnerabilities using configurable prompt mutation operators
+- Detects attack outcomes through three combined signals: regex rule matching, semantic similarity (sentence-transformers), and response-side signal analysis
+- Produces a dual severity score: **leak severity** (0–10, CVSS-aligned bands) and **attack risk score**, both written to `results.jsonl`
+- Generates JSONL result records, Markdown reports, and self-contained HTML reports with charts per run
 
 ## Architecture
 
-The main batch pipeline in `leakcheck run` is:
-
-1. Read YAML config.
-2. Create a timestamped run directory under `run.output_root`.
-3. Snapshot the config and input dataset.
-4. Ingest prompts from `jsonl` or `csv`.
-5. Generate prompt mutations if attacks are enabled.
-6. Send each prompt variant to the configured LLM endpoint.
-7. Detect rule hits, semantic similarity, and response signals.
-8. Assign a verdict and severity score.
-9. Append results to `results.jsonl`.
-10. Build `summary.json`, `report.md`, and optionally `report.html`.
-
-The web dashboard reuses the same core modules, but the campaign execution logic is duplicated inline inside [src/leakcheck/web/app.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/web/app.py).
-
-## Requirements
-
-## Python
-
-The checked-in package metadata currently declares:
-
-- Python `>=3.10,<3.14` in [pyproject.toml](/c:/Users/user/Downloads/leak-check/leak-check/pyproject.toml)
-
-That constraint matters for the current ML stack. Detection depends on `sentence-transformers`, which imports `torch`.
-
-## Dependencies
-
-Core dependencies declared in [pyproject.toml](/c:/Users/user/Downloads/leak-check/leak-check/pyproject.toml):
-
-- `pydantic`
-- `pyyaml`
-- `rich`
-- `requests`
-- `python-dotenv`
-- `numpy`
-- `torch`
-- `torchvision`
-- `torchaudio`
-- `sentence-transformers`
-- `pyarrow`
-- `flask`
-
-[requirements.txt](/c:/Users/user/Downloads/leak-check/leak-check/requirements.txt) also includes:
-
-- `--extra-index-url https://download.pytorch.org/whl/cu118`
-
-That extra index is a `pip` option, so it is present in `requirements.txt`, not in `pyproject.toml`.
-
-## Install
-
-Create a fresh virtual environment with a supported Python version:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-pip install -e .
+```
+configs/campaign.yaml
+  └─ ingest prompts     (datasets/ingest.py)
+  └─ mutate prompts     (attack/mutate.py + operators.py)
+  └─ LLM call           (llm/client.py)
+  └─ detect             (detect/detector.py)
+       ├─ rule hits     (detect/rules.py)
+       ├─ semantic sim  (detect/semantic.py)
+       └─ response sig  (detect/response_signals.py)
+  └─ score              (scoring/score.py + configs/thresholds.yaml)
+  └─ summarize          (reporting/summarize.py)
+  └─ report             (reporting/report_md.py + report_html.py)
 ```
 
-If you prefer editable install only:
+Run outputs land in `data/runs/<timestamp>_<name>/` containing `results.jsonl`, `summary.json`, `config_snapshot.yaml`, `report.md`, and `report.html`.
 
-```powershell
-pip install -e .
-```
-
-Note that `pip install -e .` by itself does not apply the CUDA wheel index from `requirements.txt`.
-
-## LLM Endpoint
-
-The project expects an OpenAI-compatible chat completions endpoint. The default endpoint used in both CLI config and the web app is:
-
-```text
-http://127.0.0.1:1234/v1/chat/completions
-```
-
-The client sends:
-
-```json
-{
-  "model": "...",
-  "messages": [{"role": "user", "content": "..."}],
-  "temperature": 0.3,
-  "max_tokens": 256,
-  "stream": false
-}
-```
-
-This behavior is implemented in [src/leakcheck/llm/client.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/llm/client.py).
-
-The client is tolerant of multiple response shapes:
-
-- OpenAI-style `choices[0].message.content`
-- fallback fields like `text`, `response`, or `output`
-
-## Quick Start
-
-## 1. Check the LLM endpoint
-
-```powershell
-leakcheck ping --endpoint http://127.0.0.1:1234/v1/chat/completions
-```
-
-## 2. Review the campaign config
-
-The default config is [configs/campaign.yaml](/c:/Users/user/Downloads/leak-check/leak-check/configs/campaign.yaml).
-
-Important: the checked-in `detection.similarity_model` currently points to a machine-specific local Windows path. You should update it to:
-
-- a valid SentenceTransformers model name, or
-- a valid local model directory path
-
-before running the detector on another machine.
-
-## 3. Run a campaign
-
-```powershell
-leakcheck run configs/campaign.yaml
-```
-
-## 4. View top results from a prior run
-
-```powershell
-leakcheck top data\runs\<run-id>\results.jsonl -n 5
-```
-
-## 5. Start the web dashboard
-
-```powershell
-leakcheck serve --port 5000
-```
-
-Then open `http://localhost:5000`.
-
-## CLI Commands
-
-The CLI subcommands are defined in [src/leakcheck/cli.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/cli.py).
-
-### `leakcheck run <config>`
-
-Runs a full campaign from a YAML config.
-
-### `leakcheck selftest-semantic`
-
-Builds semantic indices for the hardcoded categories:
-
-- `prompt_injection`
-- `jailbreak`
-- `data_exfil`
-
-and prints similarity for sample prompts.
-
-This command imports the semantic stack and therefore requires a working `sentence-transformers` and `torch` installation.
-
-### `leakcheck ping --endpoint <url>`
-
-Sends a simple chat completion request to the configured endpoint.
-
-### `leakcheck top <results.jsonl> -n <count>`
-
-Loads a results file, sorts by severity descending, and prints the top rows.
-
-### `leakcheck report <run_dir>`
-
-Regenerates `report.html` from `summary.json` and `config_snapshot.yaml`.
-
-### `leakcheck serve`
-
-Starts the Flask web app from [src/leakcheck/web/app.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/web/app.py).
-
-## Campaign Config
-
-The active example config is [configs/campaign.yaml](/c:/Users/user/Downloads/leak-check/leak-check/configs/campaign.yaml).
-
-Supported sections used by the code:
-
-### `run`
-
-- `name`
-- `seed`
-- `output_root`
-
-### `dataset`
-
-- `path`
-- `format`: `jsonl` or `csv`
-- `text_field`
-- `id_field`
-- `category_field`
-
-### `attack`
-
-- `enabled`
-- `mutations_per_prompt`
-- `operators`
-
-The web app also supports optional overrides for:
-
-- `limit`
-- `mutation_level`
-
-### `llm`
-
-- `provider`
-- `endpoint`
-- `timeout_s`
-- `retries`
-- `params.model`
-- `params.temperature`
-- `params.max_tokens`
-
-### `detection`
-
-- `enabled`
-- `similarity_model`
-- `similarity_threshold`
-- `use_learned_anchors`
-- `learned_anchors_path`
-
-### `scoring`
-
-- `enabled`
-- `thresholds_file`
-
-### `reporting`
-
-- `enabled`
-- `output_report_md`
-- `output_report_html`
-- `output_summary_json`
-
-## Prompt Mutations
-
-Mutation operators are defined in [src/leakcheck/attack/operators.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/attack/operators.py).
-
-Implemented operators:
-
-- `prefix_injection`
-- `role_wrapper`
-- `instruction_stack`
-- `benign_rephrase_prefix`
-- `benign_wrapper`
-- `format_shift`
-- `obfuscate_spacing`
-
-Operator filtering is category-aware in [src/leakcheck/attack/mutate.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/attack/mutate.py):
-
-- `benign` prompts only receive benign-safe/shared operators
-- all other categories are treated as attack categories
-
-Mutation generation is deterministic for a given `seed` and mutation index.
-
-## Detection Logic
-
-Detection combines three sources of evidence:
-
-### 1. Rule hits
-
-Rule patterns are implemented in [src/leakcheck/detect/rules.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/rules.py).
-
-Categories with explicit regex rules:
-
-- `prompt_injection`
-- `jailbreak`
-- `data_exfil`
-
-There is also a benign-context allowlist that produces `BENIGN_*` markers.
-
-### 2. Semantic similarity
-
-Semantic similarity is implemented in [src/leakcheck/detect/semantic.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/semantic.py).
-
-Important implementation details:
-
-- similarity uses `SentenceTransformer(model_name)`
-- each category gets its own cached semantic index
-- static anchor texts are built into the code for `prompt_injection`, `jailbreak`, and `data_exfil`
-- prompt text is sanitized before similarity scoring
-- short greetings like `hi` and `hello` are whitelisted to similarity `0.0`
-- prompts shorter than 15 characters require similarity at least `0.75` to count
-
-### 3. Response signals
-
-Response analysis is implemented in [src/leakcheck/detect/response_signals.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/response_signals.py).
-
-It distinguishes:
-
-- refusal signals
-- attempt or mention signals
-- stronger success-evidence signals
-
-Success signals are gated so refusal text is not treated as attack success.
-
-## Verdicts
-
-The detector emits one of:
-
-- `safe`
-- `attack_attempt`
-- `attack_success`
-
-Current logic in [src/leakcheck/detect/detector.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/detector.py):
-
-- `attack_success` requires explicit success evidence from the model response
-- `attack_attempt` is triggered by attack rule hits or similarity above threshold
-- `safe` is used otherwise
-
-The detector also marks over-refusal cases when:
-
-- the final verdict is `safe`
-- the response contains a refusal
-- no attack rules were hit
-
-## Learned Anchors
-
-If `use_learned_anchors` is enabled, the semantic index loads additional anchors from `learned_anchors_path`.
-
-Current behavior:
-
-- if the file does not exist, the loader returns an empty list
-- qualifying prompts are appended automatically during detection
-- the file is written as JSONL with one object per line, containing a `text` field
-
-This is implemented in [src/leakcheck/detect/semantic.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/semantic.py) and [src/leakcheck/detect/detector.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/detect/detector.py).
-
-Important limitation:
-
-- learned anchors appended after an index is already cached are not retroactively re-embedded for that same cached index during the current run
-- they will be available on the next run
-
-## Scoring
-
-Scoring is implemented in [src/leakcheck/scoring/score.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/scoring/score.py).
-
-Inputs to severity:
-
-- attack category
-- final verdict
-- attack rule hits
-- optional rule severity hints
-- detection confidence
-- semantic similarity support
-- response-side signals
-- repeatability across prompt variants when available
-
-The active scoring policy is defined in [configs/thresholds.yaml](/c:/Users/user/Downloads/leak-check/leak-check/configs/thresholds.yaml) and produces a deterministic CVSS-aligned `0.0` to `10.0` severity score. The model is not raw CVSS vulnerability scoring; it is LeakCheck evidence mapped onto CVSS-like severity bands.
-
-Scoring invariants:
-
-- `safe` always forces severity `0.0`
-- benign safe flows remain `0.0`
-- `attack_attempt` is capped below `attack_success`
-- confidence is bounded support, not severity by itself
-- missing optional signals degrade to `0.0`, they do not inflate the score
-
-Severity bands:
-
-- `low`: `0.1` to `3.9`
-- `medium`: `4.0` to `6.9`
-- `high`: `7.0` to `8.9`
-- `critical`: `9.0` to `10.0`
-
-## Run Outputs
-
-Each run creates a timestamped directory under `run.output_root`, for example:
-
-```text
-data/runs/20260218_103719_Maximum Campaign
-```
-
-Files created by the pipeline:
-
-- `config_snapshot.yaml`
-- `dataset_snapshot/<original filename>`
-- `logs.txt`
-- `results.jsonl`
-- `summary.json` if enabled
-- `report.md` if enabled
-- `report.html` if enabled
-
-## Results Format
-
-Each record appended to `results.jsonl` currently contains:
-
-- `base_id`
-- `prompt_id`
-- `category`
-- `operators`
-- `prompt_text`
-- `response_text`
-- `latency_ms`
-- `verdict`
-- `is_attempt`
-- `is_success`
-- `over_refusal`
-- `confidence`
-- `rule_hits`
-- `similarity_score`
-- `response_signals`
-- `severity`
-- `level`
-- `severity_label`
-- `score_version`
-- `score_components`
-- `score_explanation`
-- `evidence`
-
-## Web Dashboard
-
-The Flask app serves four pages:
-
-- `/`
-- `/campaigns`
-- `/reports`
-- `/chat`
-
-The app also exposes JSON endpoints:
-
-- `GET /api/reports`
-- `GET /api/reports/<run_id>/html`
-- `GET /api/reports/<run_id>/summary`
-- `POST /api/chat`
-- `POST /api/campaign/run`
-- `GET /api/campaign/status/<job_id>`
-- `GET /api/ping`
-
-Environment variables used by the web app:
-
-- `LLM_ENDPOINT`
-- `LLM_MODEL`
-
-### Web-specific behavior worth knowing
-
-- chat detection currently instantiates `Detector` with `similarity_model="all-MiniLM-L6-v2"` and `use_learned=False`
-- the web campaign runner supports `mutation_level` and maps it to operator presets
-- the web app keeps job state in an in-memory `_jobs` dictionary
-
-That means job state is not persisted across process restarts.
-
-## Reports
-
-Markdown report generation is in [src/leakcheck/reporting/report_md.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/reporting/report_md.py).
-
-HTML report generation is in [src/leakcheck/reporting/report_html.py](/c:/Users/user/Downloads/leak-check/leak-check/src/leakcheck/reporting/report_html.py).
-
-The HTML report is self-contained in the sense that it writes a single HTML file, but the generated page currently references external CDNs for:
-
-- Google Fonts
-- Chart.js
-
-So full offline rendering of the report page is not guaranteed by the code as written.
-
-## Dataset Preparation Script
-
-[scripts/prepare_datasets.py](/c:/Users/user/Downloads/leak-check/leak-check/scripts/prepare_datasets.py) merges several external datasets into LeakCheck JSONL files.
-
-Important caveat:
-
-- the script currently hardcodes `DATASETS_ROOT` to `C:\Users\mahmoud\Downloads\DATASETS to use`
-
-Outputs written by the script:
-
-- [data/raw/prompts_demo.jsonl](/c:/Users/user/Downloads/leak-check/leak-check/data/raw/prompts_demo.jsonl)
-- [data/raw/prompts_full.jsonl](/c:/Users/user/Downloads/leak-check/leak-check/data/raw/prompts_full.jsonl)
-
-## Tests
-
-Current tests in [tests](/c:/Users/user/Downloads/leak-check/leak-check/tests):
-
-- [tests/test_schemas.py](/c:/Users/user/Downloads/leak-check/leak-check/tests/test_schemas.py)
-- [tests/test_mutation_determinism.py](/c:/Users/user/Downloads/leak-check/leak-check/tests/test_mutation_determinism.py)
-- [tests/test_detection_smoke.py](/c:/Users/user/Downloads/leak-check/leak-check/tests/test_detection_smoke.py)
-
-Run them with:
-
-```powershell
-pytest
-```
-
-Be aware that the detection smoke test imports `Detector`, so it also depends on a working `sentence-transformers` and `torch` installation.
-
-## Current Limitations And Caveats
-
-- The checked-in campaign config contains a machine-specific `similarity_model` path and is not portable as-is.
-- Detection requires a working local `torch` installation.
-- The web chat detection path is not config-driven; it hardcodes `all-MiniLM-L6-v2`.
-- Web job state is in memory only.
-- The web app duplicates pipeline logic instead of calling the CLI entrypoint or a shared service layer.
-- `attack.enabled: true` in the CLI path generates mutations only; it does not currently include the original unmutated prompt in addition to mutations.
-- Unknown prompt categories are treated as attack categories by mutation filtering, but rule-based detection only has explicit rules for `prompt_injection`, `jailbreak`, and `data_exfil`.
+**Note:** `src/leakcheck/web/app.py` contains an inline copy of the campaign runner, not a call to `run_campaign()`. Changes to the CLI pipeline must be mirrored manually in the web app's `_run_campaign_job()` thread.
 
 ## Repository Layout
 
-```text
-configs/        YAML config files and thresholds
-data/raw/       Input datasets
-data/runs/      Generated run artifacts
-scripts/        Utility scripts
-src/leakcheck/  Application source
-tests/          Basic tests
 ```
+configs/                    YAML campaign config and scoring thresholds
+data/
+  raw/                      Input datasets (prompts_demo.jsonl, prompts_full.jsonl)
+  interim/                  Learned anchors (learned_attacks.jsonl)
+  runs/                     Generated run artifacts (timestamped subdirs)
+model/
+  best_model/               Local fine-tuned sentence-transformers model
+scripts/                    Utility scripts (dataset preparation)
+src/leakcheck/
+  attack/                   Mutation operators and prompt variant generation
+  common/                   Schemas (PromptRecord, MutationRecord), run folder utils
+  datasets/                 Prompt ingestion (JSONL, CSV)
+  detect/                   Detector, rules, semantic similarity, response signals
+  llm/                      OpenAI-compatible HTTP client with retry
+  reporting/                summarize_results(), HTML and Markdown report writers
+  scoring/                  Severity scoring, CVSS explainer
+  validators/               Validated finding types
+  web/                      Flask app, API routes, inline campaign runner
+tests/                      Test suite
+```
+
+## Installation
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt   # required: applies --extra-index-url for CUDA wheels
+pip install -e .                  # installs leakcheck CLI in editable mode
+```
+
+`pip install -e .` alone does **not** apply the CUDA PyTorch wheel index from `requirements.txt`. Both steps are required for GPU-accelerated inference.
+
+Requires Python `>=3.10,<3.14`.
+
+## Configuration
+
+### campaign.yaml keys
+
+| Section | Key | Type | Effect |
+|---------|-----|------|--------|
+| `run` | `name` | string | Label appended to the run folder name |
+| `run` | `seed` | int | Seed for deterministic mutation |
+| `run` | `output_root` | string | Root directory for run output (e.g. `data/runs`) |
+| `dataset` | `path` | string | Path to input dataset |
+| `dataset` | `format` | string | `jsonl` or `csv` |
+| `dataset` | `text_field` | string | Field containing prompt text |
+| `dataset` | `id_field` | string | Field containing prompt ID |
+| `dataset` | `category_field` | string | Field containing prompt category |
+| `attack` | `enabled` | bool | Enable mutation generation |
+| `attack` | `mutations_per_prompt` | int | Number of variants to generate per prompt |
+| `attack` | `operators` | list | Operator names to apply (see Detection Pipeline) |
+| `llm` | `provider` | string | Client type (e.g. `lmstudio_openai_compat`) |
+| `llm` | `endpoint` | string | Chat completions URL |
+| `llm` | `timeout_s` | int | Request timeout in seconds |
+| `llm` | `retries` | int | Retry count on failure |
+| `llm` | `params.model` | string | Model name sent in request body |
+| `llm` | `params.temperature` | float | Sampling temperature |
+| `llm` | `params.max_tokens` | int | Max tokens in response |
+| `detection` | `similarity_model` | string | SentenceTransformers model name or local path |
+| `detection` | `similarity_threshold` | float | Cosine similarity threshold for attack flagging |
+| `detection` | `use_learned_anchors` | bool | Load additional anchors from file |
+| `detection` | `learned_anchors_path` | string | Path to learned anchors JSONL |
+| `scoring` | `thresholds_file` | string | Path to thresholds YAML |
+| `reporting` | `output_report_md` | bool | Write `report.md` |
+| `reporting` | `output_report_html` | bool | Write `report.html` |
+| `reporting` | `output_summary_json` | bool | Write `summary.json` |
+
+### Environment variables (web app)
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `LLM_ENDPOINT` | `http://127.0.0.1:1234/v1/chat/completions` | LLM endpoint used by the web app |
+| `LLM_MODEL` | `llama-3.2-3b-instruct` | Model name sent in web app requests |
+| `LLM_TIMEOUT_S` | `180` | Request timeout (seconds) for the web app |
+
+## Quick Start
+
+```bash
+# 1. Verify LLM endpoint is reachable
+leakcheck ping --endpoint http://127.0.0.1:1234/v1/chat/completions
+
+# 2. Edit configs/campaign.yaml (set dataset path, model, endpoint)
+
+# 3. Run a campaign
+leakcheck run configs/campaign.yaml
+
+# 4. Inspect top results
+leakcheck top data/runs/<run-id>/results.jsonl -n 5
+
+# 5. Open the HTML report
+#    data/runs/<run-id>/report.html
+```
+
+## CLI Reference
+
+### `leakcheck run`
+
+Run a full campaign from a YAML config file.
+
+```
+leakcheck run <config>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `config` | Path to `campaign.yaml` |
+
+```bash
+leakcheck run configs/campaign.yaml
+```
+
+### `leakcheck serve`
+
+Start the LeakCheck Flask web dashboard.
+
+```
+leakcheck serve [--host HOST] [--port PORT]
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--host` | `0.0.0.0` | Host to bind to |
+| `--port` | `5000` | Port to listen on |
+
+```bash
+leakcheck serve --port 5000
+# then open http://localhost:5000
+```
+
+### `leakcheck ping`
+
+Test connectivity to an LLM endpoint by sending a single prompt.
+
+```
+leakcheck ping [--endpoint URL]
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--endpoint` | `http://127.0.0.1:1234/v1/chat/completions` | Chat completions URL |
+
+```bash
+leakcheck ping --endpoint http://127.0.0.1:1234/v1/chat/completions
+```
+
+### `leakcheck top`
+
+Print the top-N results from a `results.jsonl` file, sorted by severity descending.
+
+```
+leakcheck top <results> [-n N]
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `results` | — | Path to `results.jsonl` |
+| `-n` | `5` | Number of results to display |
+
+```bash
+leakcheck top data/runs/<run-id>/results.jsonl -n 10
+```
+
+### `leakcheck report`
+
+Regenerate `report.html` from an existing run folder. Requires `summary.json` to be present.
+
+```
+leakcheck report <run_dir>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `run_dir` | Path to run folder |
+
+```bash
+leakcheck report data/runs/<run-id>
+```
+
+### `leakcheck selftest-semantic`
+
+Build semantic indices for `prompt_injection`, `jailbreak`, and `data_exfil`, then print cosine similarity scores for sample prompts. Useful for verifying the sentence-transformers stack.
+
+```bash
+leakcheck selftest-semantic
+```
+
+## Detection Pipeline
+
+### Stage 1 — Rule detection
+
+Regex rules defined in `detect/rules.py` match against a canonicalized (lowercased, de-obfuscated) copy of the prompt text.
+
+Rule IDs by category:
+
+- **prompt_injection:** `PI_IGNORE_PREV`, `PI_SYSTEM_PROMPT`, `PI_REVEAL_SYSTEM`, `PI_LEAK_REQUEST`
+- **jailbreak:** `JB_DEV_MODE`, `JB_BYPASS`, `JB_NO_RESTRICTIONS`
+- **data_exfil:** `EXFIL_KEYS`, `EXFIL_CONFIDENTIAL`, `EXFIL_REVEAL`, `EXFIL_TRAINING_DATA`
+
+ML classifier signals (`ML_INJECTION`, `ML_JAILBREAK`, `ML_LEAKAGE`, and weak variants) are also supported as dynamic rule hits weighted in `configs/thresholds.yaml`.
+
+### Stage 2 — Semantic similarity
+
+`detect/semantic.py` embeds the prompt with a SentenceTransformers model and computes cosine similarity against per-category static anchor texts. The index is cached per `(model, category)` pair via `@lru_cache`.
+
+- Short greetings (`hi`, `hello`) are whitelisted to similarity `0.0`
+- Prompts shorter than 15 characters require similarity ≥ `0.75` to count
+- If `use_learned_anchors` is enabled, additional anchors are loaded from `learned_anchors_path` at index build time
+
+### Stage 3 — Response signals
+
+`detect/response_signals.py` analyzes the LLM response to classify:
+
+- **Refusal signals** — model declined the request
+- **Attempt/mention signals** — model acknowledged the intent
+- **Success signals** — model complied with the attack
+
+Success signals are gated: refusal text prevents a success classification.
+
+Verdicts emitted: `safe`, `attack_attempt`, `attack_success`.
+
+## Scoring
+
+LeakCheck uses a dual scoring system, both written to each `results.jsonl` record via `score_output_fields()`.
+
+### Leak severity (0–10)
+
+CVSS-aligned severity score computed from category base score, verdict bonus, rule hits, semantic similarity, response signals, and repeatability across variants.
+
+| Band | Range |
+|------|-------|
+| none | 0.0 |
+| low | 0.1–3.9 |
+| medium | 4.0–6.9 |
+| high | 7.0–8.9 |
+| critical | 9.0–10.0 |
+
+- `safe` verdict always forces severity `0.0`
+- `attack_attempt` is capped at `6.9`; `attack_success` can reach `10.0`
+- Policy loaded from `configs/thresholds.yaml` (`score_version: leakcheck_cvss_aligned_v1`)
+
+### Attack risk score
+
+A second score field capturing attack-side risk, also present in `results.jsonl`. Both scores are visible in the `leakcheck top` output (`attack_risk=` and `leak=` columns).
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run a specific file
+pytest tests/test_schemas.py
+
+# Run a specific test by name
+pytest tests/test_scoring.py -k <name>
+```
+
+| Test file | Description |
+|-----------|-------------|
+| `tests/test_schemas.py` | Pydantic schema validation for core record types |
+| `tests/test_mutation_determinism.py` | Mutation operators produce stable output for a fixed seed |
+| `tests/test_detection_smoke.py` | End-to-end detector smoke test (requires torch + sentence-transformers) |
+| `tests/test_scoring.py` | Severity scoring logic and CVSS explainer |
+| `tests/test_reporting.py` | HTML and Markdown report generation |
+| `tests/test_web_detection.py` | Web app detection helpers and API routes |
+| `tests/test_run_utils.py` | Run folder utilities and path resolution |
+| `tests/test_validators_registry.py` | Validator registry and typed finding construction |
+| `tests/test_dependency_hygiene.py` | Verifies no import cycles exist in the internal module graph |
+| `tests/test_repo_hygiene.py` | Verifies no internal import cycles at the repository level |
+| `tests/test_prepare_datasets.py` | Dataset preparation script import and structure |
+
+## Code Quality
+
+```bash
+# Lint
+ruff check src/ tests/
+
+# Format check
+ruff format --check src/ tests/
+
+# Auto-fix
+ruff check --fix src/ tests/
+```
+
+Relevant `pyproject.toml` config:
+
+```toml
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+```
+
+Install dev dependencies with `pip install -e ".[dev]"` (includes `pytest>=8.0` and `ruff>=0.4`).
+
+## Known Limitations
+
+- **Web app duplicates CLI pipeline.** `src/leakcheck/web/app.py` contains an inline copy of `run_campaign()`; changes to the CLI pipeline must be mirrored manually in the web app.
+- **`model/best_model` is machine-local.** The local fine-tuned model is not portable across machines. Use `all-MiniLM-L6-v2` (a public SentenceTransformers model) as a portable alternative in `configs/campaign.yaml`.
+- **Learned anchors are append-only per run.** Anchors written during a run are not retroactively embedded into the already-cached index for that run; they take effect on the next run.
+- **Web chat hardcodes `all-MiniLM-L6-v2`.** The `/api/chat` detection path uses a fixed model name, independent of `campaign.yaml`.
+- **Web job state is in-memory only.** The `_jobs` dictionary is lost on process restart; there is no persistence layer.
+- **HTML reports reference external CDNs.** Generated `report.html` files load Chart.js and Google Fonts from the internet; offline rendering is not guaranteed.
+- **Unknown prompt categories default to attack operators.** Mutation filtering treats any category other than `benign` as an attack category.

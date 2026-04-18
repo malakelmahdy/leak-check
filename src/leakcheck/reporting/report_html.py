@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import html as html_mod
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 
 
 def _esc(s: Any) -> str:
@@ -73,6 +73,7 @@ def write_report_html(
     run_meta: dict[str, Any],
     summary: dict[str, Any],
 ) -> None:
+    """Generate a self-contained HTML report with dark theme, Chart.js charts, and top-results table. References external CDNs (Google Fonts, Chart.js) — offline rendering requires bundled assets."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- Extract metadata ---
@@ -100,7 +101,6 @@ def write_report_html(
     all_safes = sum(c.get("safes", 0) for c in by_cat.values())
     overall_success_rate = (all_successes / total * 100) if total else 0
     overall_attempt_rate = (all_attempts / total * 100) if total else 0
-    avg_severity = sum(c.get("avg_severity", 0) * c.get("count", 0) for c in by_cat.values()) / total if total else 0
     avg_signoff = sum(c.get("worst_signoff_score", 0) * c.get("count", 0) for c in by_cat.values()) / total if total else 0
     avg_attack_risk = sum(c.get("avg_attack_risk", 0) * c.get("count", 0) for c in by_cat.values()) / total if total else 0
 
@@ -113,14 +113,12 @@ def write_report_html(
     cat_successes = json.dumps([by_cat[c].get("successes", 0) for c in categories])
     cat_attempts = json.dumps([by_cat[c].get("attempts", 0) for c in categories])
     cat_safes = json.dumps([by_cat[c].get("safes", 0) for c in categories])
-    cat_severities = json.dumps([round(by_cat[c].get("worst_signoff_score", 0), 2) for c in categories])
     cat_attack_risks = json.dumps([round(by_cat[c].get("worst_attack_risk_score", 0), 2) for c in categories])
 
     # --- Top results rows ---
     result_rows: list[str] = []
     for i, r in enumerate(top_10):
         pid = _esc(r.get("prompt_id", ""))
-        base = _esc(r.get("base_id", ""))
         cat = r.get("category", "")
         verdict = r.get("verdict", "")
         sev = float(r.get("signoff_severity", r.get("severity_v2", r.get("severity", 0))))

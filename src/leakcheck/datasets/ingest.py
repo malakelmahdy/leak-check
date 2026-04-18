@@ -3,12 +3,12 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any
 
 from leakcheck.common.schemas import PromptRecord
 
 
 def ingest_local_jsonl(path: str, id_field: str, text_field: str, category_field: str) -> list[PromptRecord]:
+    """Load prompts from a JSONL file. Field names are configurable per campaign config. Skips records with empty id or text."""
     p = Path(path)
     records: list[PromptRecord] = []
     with p.open("r", encoding="utf-8") as f:
@@ -26,6 +26,7 @@ def ingest_local_jsonl(path: str, id_field: str, text_field: str, category_field
 
 
 def ingest_local_csv(path: str, id_field: str, text_field: str, category_field: str) -> list[PromptRecord]:
+    """Load prompts from a CSV file using DictReader. Field names are configurable. Skips records with empty id or text."""
     p = Path(path)
     records: list[PromptRecord] = []
     with p.open("r", encoding="utf-8", newline="") as f:

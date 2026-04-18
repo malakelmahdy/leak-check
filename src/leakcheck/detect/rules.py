@@ -134,11 +134,17 @@ BENIGN_ALLOWLIST = [
 
 
 def rule_detect(category: str, text: str) -> list[str]:
+    """Run static regex detection for the given attack category.
+
+    Returns both BENIGN_* advisory markers and attack rule IDs.
+    BENIGN_* hits do not veto attack rules; callers must handle them
+    as advisory signals.
+    """
     hits: list[str] = []
 
     t = _canon(text)
 
-    # benign context signal (independent of category)
+    # BENIGN_* markers are advisory — they don't veto attack rules. A prompt matching both BENIGN_GENERAL_QA and PI_IGNORE_PREV is still classified as an attack.
     for bid, pat in BENIGN_ALLOWLIST:
         if pat.search(t):
             hits.append(bid)

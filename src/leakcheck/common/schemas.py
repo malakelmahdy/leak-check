@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Literal
+from typing import Any, Literal, Optional
+
 from pydantic import BaseModel, Field
 
 
 class PromptRecord(BaseModel):
+    """Input prompt record ingested from a dataset. Carries category, raw text, and optional metadata into the mutation and detection pipeline."""
+
     id: str
     category: str
     text: str
@@ -14,6 +17,8 @@ class PromptRecord(BaseModel):
 
 
 class MutationRecord(BaseModel):
+    """Mutated variant of a base prompt produced by the attack mutation stage. Records which operators were applied and the resulting text."""
+
     base_id: str
     mutation_id: str
     operators: list[str]
@@ -22,6 +27,8 @@ class MutationRecord(BaseModel):
 
 
 class LLMResponseRecord(BaseModel):
+    """Raw output returned by the LLM for a single prompt. Preserves response text, latency, and the original API payload for downstream detection."""
+
     prompt_id: str
     response_text: str
     latency_ms: int
@@ -30,6 +37,8 @@ class LLMResponseRecord(BaseModel):
 
 
 class DetectionResult(BaseModel):
+    """Verdict and supporting evidence produced by the detector for one prompt. Aggregates rule hits, semantic similarity, and response signals into a single confidence-weighted verdict."""
+
     prompt_id: str
     category: str
     verdict: str  # "attack_success" | "attack_attempt" | "safe"
@@ -41,6 +50,8 @@ class DetectionResult(BaseModel):
 
 
 class SeverityInput(BaseModel):
+    """Enriched input assembled for the severity scoring stage. Collects verdict, rule hits, classifier output, and signal data from detection into a single scoring payload."""
+
     prompt_id: str
     attack_category: str
     final_verdict: str
@@ -55,14 +66,18 @@ class SeverityInput(BaseModel):
 
 
 class ScoreContribution(BaseModel):
+    """Single factor's contribution to a composite severity score. Records the factor name, its value, the score delta it caused, and a human-readable reason."""
+
     factor: str
     kind: str
-    value: Any = None
+    value: str | float | None = None
     delta: float
     reason: str
 
 
 class ScoreExplanation(BaseModel):
+    """Human-readable explanation of a v1 severity score. Summarises the final score, top contributing factors, evidence, and any scoring caveats for report output."""
+
     score_version: str
     final_score: float
     severity_label: str
@@ -74,6 +89,8 @@ class ScoreExplanation(BaseModel):
 
 
 class ScoreRecord(BaseModel):
+    """Complete v1 scoring result for one prompt. Holds the 0–10 severity value, band label, and an optional structured explanation written to results.jsonl."""
+
     prompt_id: str
     severity: float  # 0-10
     level: str       # low/medium/high/critical
@@ -86,6 +103,8 @@ class ScoreRecord(BaseModel):
 
 
 class DetectorEvidence(BaseModel):
+    """Single piece of evidence emitted by one detector. Captures the detector family, leak type, confidence, and optional character offsets of the candidate text."""
+
     evidence_id: str
     detector_id: str
     detector_family: Literal["static", "semantic", "dynamic"]
@@ -101,6 +120,8 @@ class DetectorEvidence(BaseModel):
 
 
 class ValidationResult(BaseModel):
+    """Result of post-detection validation for a piece of evidence. Records the validator's status decision and any confidence adjustment it applies to the parent finding."""
+
     validation_id: str
     validator_id: str
     status: Literal["validated", "rejected", "inconclusive", "not_applicable"]
@@ -112,6 +133,8 @@ class ValidationResult(BaseModel):
 
 
 class LeakageFinding(BaseModel):
+    """Complete finding record representing a detected information leak. Combines asset sensitivity, exposure extent, exploitability, supporting evidence, and validation outcomes into a single reportable unit."""
+
     finding_id: str
     prompt_id: str
     leak_type: str
@@ -133,6 +156,8 @@ class LeakageFinding(BaseModel):
 
 
 class SeverityScore(BaseModel):
+    """V2 severity score computed for a single LeakageFinding. Derives a 0–10 final score from impact, evidence confidence, exploitability, and exposure extent."""
+
     finding_id: str
     score_version: str
     impact: float = Field(ge=0.0, le=10.0)
@@ -146,6 +171,8 @@ class SeverityScore(BaseModel):
 
 
 class AttackRiskScore(BaseModel):
+    """Attack risk assessment capturing intent confidence, capability, and sophistication of an observed attack. Produces a 0–10 final score and severity band used by the v2 scoring path."""
+
     score_version: str
     attack_intent_confidence: float = Field(ge=0.0, le=1.0)
     attack_capability: float = Field(ge=0.0, le=1.0)

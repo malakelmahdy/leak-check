@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 
 
 def _now_iso() -> str:
@@ -21,6 +21,7 @@ def _dig(d: dict[str, Any], path: list[str]) -> Any:
 
 
 def write_report_md(out_path: Path, run_meta: dict[str, Any], summary: dict[str, Any]) -> None:
+    """Generate a Markdown report from run metadata and summary dict. Robust to missing config fields; includes per-category breakdown, top-10 results table, and scoring explanation."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     # --- robust run metadata ---
