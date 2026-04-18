@@ -75,3 +75,8 @@ dmypy.json
 # ── Keep these data files (input datasets & learned anchors) ─────────────────
 # data/raw/        → tracked (prompt datasets needed for CI / demo)
 # data/interim/    → tracked (learned_attacks.jsonl evolves with training)
+
+# Local dev files
+CLAUDE.md
+agents/
+data/test_prepare_datasets/
