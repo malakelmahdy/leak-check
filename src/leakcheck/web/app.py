@@ -13,11 +13,27 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
-import requests  # type: ignore[import]
 import yaml  # type: ignore[import]
 from flask import Flask, jsonify, render_template, request, send_from_directory  # type: ignore[import]
+from leakcheck.common.run_utils import resolve_child_path, resolve_project_path  # type: ignore[import]
+from leakcheck.execution.campaign import CampaignProgress, run_campaign_config  # type: ignore[import]
+from leakcheck.evaluation.benchmark import benchmark_payload, write_benchmark_markdown  # type: ignore[import]
+from leakcheck.evaluation.metrics import evaluate_results_file  # type: ignore[import]
+from leakcheck.proxy.active import ActiveInjectionRunner  # type: ignore[import]
+from leakcheck.llm.client import LLMClient, response_shape, validate_llm_config  # type: ignore[import]
+from leakcheck.proxy.http_capture import ProxyCaptureStore, sanitize_exchange_payload  # type: ignore[import]
+from leakcheck.proxy.mitm_proxy import BrowserMitmCertificateManager, BrowserMitmProxyRuntime  # type: ignore[import]
+from leakcheck.proxy.replay import compare_replay, replay_exchange, replay_payload  # type: ignore[import]
+from leakcheck.proxy.reverse_proxy import ReverseProxyRuntime  # type: ignore[import]
+from leakcheck.proxy.scoring import (  # type: ignore[import]
+    ProxyScoringConfig,
+    ProxyScoringService,
+    detection_payload,
+    redact_scored_payload_bodies,
+)
+from leakcheck.reporting.proxy_report import write_proxy_report_html, write_proxy_report_md  # type: ignore[import]
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -34,13 +50,15 @@ app = Flask(
 
 # Store campaign jobs in-memory
 _jobs: dict[str, dict[str, Any]] = {}
+_proxy_store: ProxyCaptureStore | None = None
+_proxy_runtime: ReverseProxyRuntime | BrowserMitmProxyRuntime | None = None
+_active_runner: ActiveInjectionRunner | None = None
 
 # Default LLM endpoint
 LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "http://127.0.0.1:1234/v1/chat/completions")
 DEFAULT_MODEL = os.environ.get("LLM_MODEL", "llama-3.2-3b-instruct")
 LLM_TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "180"))
 logger = logging.getLogger(__name__)
-VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionResult"]  # noqa: F821
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +66,83 @@ VariantRun: TypeAlias = tuple["MutationRecord", "LLMResponseRecord", "DetectionR
 # ---------------------------------------------------------------------------
 def _runs_dir() -> Path:
     return PROJECT_ROOT / "data" / "runs"
+
+
+def _proxy_sessions_dir() -> Path:
+    return PROJECT_ROOT / "data" / "proxy_sessions"
+
+
+def _campaign_config() -> dict[str, Any]:
+    cfg_path = PROJECT_ROOT / "configs" / "campaign.yaml"
+    if not cfg_path.exists():
+        return {}
+    with cfg_path.open("r", encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle)
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _proxy_config() -> dict[str, Any]:
+    return dict(_campaign_config().get("proxy", {}) or {})
+
+
+def _resolve_proxy_cert_dir(raw_path: str | None = None) -> Path:
+    cert_path = raw_path or str(dict(_proxy_config().get("mitm", {}) or {}).get("cert_dir", "")) or "data/proxy_certs"
+    resolved = Path(resolve_project_path(cert_path))
+    data_root = (PROJECT_ROOT / "data").resolve()
+    if data_root not in resolved.resolve().parents and resolved.resolve() != data_root:
+        raise ValueError("MITM certificate directory must stay under the project data directory")
+    return resolved
+
+
+def _evaluation_dir() -> Path:
+    return PROJECT_ROOT / "data" / "evaluation"
+
+
+def _proxy_capture_store() -> ProxyCaptureStore:
+    global _proxy_store
+    if _proxy_store is None:
+        _proxy_store = ProxyCaptureStore(_proxy_sessions_dir())
+    return _proxy_store
+
+
+def _stop_proxy_runtime() -> None:
+    global _proxy_runtime
+    if _proxy_runtime is not None:
+        _proxy_runtime.stop()
+        _proxy_runtime = None
+
+
+def _active_audit_log_path(session_id: str) -> Path:
+    return _proxy_sessions_dir() / session_id / "active_injection_audit.jsonl"
+
+
+def _read_active_audit_log(session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    path = _active_audit_log_path(session_id)
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows[-max(1, int(limit)) :]
+
+
+def _is_localhost_host(host: str) -> bool:
+    raw_host = str(host or "").strip().lower()
+    if raw_host.startswith("[::1]"):
+        hostname = "::1"
+    else:
+        hostname = raw_host.split(":", 1)[0]
+    return hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+@app.context_processor
+def inject_security_warning() -> dict[str, Any]:
+    return {
+        "show_v1_security_warning": not _is_localhost_host(request.host),
+        "v1_security_warning": "V1 dashboard is not production-authenticated. Use only on localhost or trusted networks.",
+    }
 
 
 def _chat_detector():
@@ -71,20 +166,7 @@ def _chat_detector():
 
 
 def _score_detection(det: "DetectionResult", repeatability: float | None = None) -> dict[str, Any]:  # noqa: F821
-    from leakcheck.scoring.score import compute_severity, score_output_fields  # type: ignore[import]
-
-    score = compute_severity(det, repeatability=repeatability)
-
-    return {
-        "category": det.category,
-        "verdict": det.verdict,
-        "confidence": det.confidence,
-        "rule_hits": det.rule_hits,
-        "similarity_score": det.similarity_score,
-        "response_signals": det.response_signals,
-        "evidence": det.evidence,
-        **score_output_fields(score),
-    }
+    return detection_payload(det, repeatability=repeatability)
 
 
 def _empty_detection_payload(category: str, error: str) -> dict[str, Any]:
@@ -176,23 +258,29 @@ def _list_runs() -> list[dict[str, Any]]:
 def _call_llm(prompt: str, model: str | None = None) -> dict[str, Any]:
     """Call the LLM endpoint and return the response."""
     model = model or DEFAULT_MODEL
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 1024,
+    llm_cfg = {
+        "provider": "openai_compatible",
+        "endpoint": LLM_ENDPOINT,
+        "timeout_s": LLM_TIMEOUT_S,
+        "retries": 0,
+        "params": {"model": model, "temperature": 0.7, "max_tokens": 1024},
     }
     try:
-        resp = requests.post(LLM_ENDPOINT, json=payload, timeout=(10, LLM_TIMEOUT_S))
-        resp.raise_for_status()
-        data = resp.json()
-        # OpenAI-compatible format
-        choices = data.get("choices", [])
-        if choices:
-            text = choices[0].get("message", {}).get("content", "")
-        else:
-            text = data.get("text") or data.get("response") or str(data)
-        return {"text": text, "raw": data}
+        normalized = validate_llm_config(llm_cfg)
+        client = LLMClient(
+            endpoint=normalized["endpoint"],
+            timeout_s=normalized["timeout_s"],
+            retries=normalized["retries"],
+            provider=normalized["provider"],
+        )
+        resp = client.generate(prompt, params=llm_cfg["params"])
+        return {
+            "text": resp.response_text,
+            "raw": resp.raw,
+            "latency_ms": resp.latency_ms,
+            "model": resp.model,
+            "response_shape": response_shape(resp.raw),
+        }
     except Exception as e:
         logger.warning("LLM call failed for model %s", model, exc_info=True)
         return {"text": "", "error": str(e)}
@@ -211,6 +299,27 @@ def _detect_prompt(prompt: str, response: str, category: str = "unknown") -> dic
     except Exception as e:
         logger.exception("Detection failed for category %s", category)
         return _empty_detection_payload(category, str(e))
+
+
+def _proxy_session_payload(session_id: str) -> dict[str, Any]:
+    store = _proxy_capture_store()
+    session = store.get_session(session_id)
+    exchanges = store.load_exchanges(session_id)
+    replay_results_path = _proxy_sessions_dir() / session_id / "replay_results.json"
+    replay_results: list[dict[str, Any]] = []
+    if replay_results_path.exists():
+        loaded = json.loads(replay_results_path.read_text(encoding="utf-8"))
+        replay_results = loaded if isinstance(loaded, list) else []
+    scoring = ProxyScoringService(
+        ProxyScoringConfig(similarity_model=DEFAULT_SIMILARITY_MODEL),
+        detector_factory=_chat_detector,
+    ).score_exchanges(exchanges, conversation_id=session_id)
+    return {
+        "session": session,
+        "exchanges": [exchange.model_dump(mode="json") for exchange in exchanges],
+        "replay_results": replay_results,
+        **scoring,
+    }
 
 
 def _precheck_prompt(prompt: str) -> dict[str, Any]:
@@ -249,6 +358,24 @@ def page_chat():
     return render_template("chat.html")
 
 
+@app.route("/proxy")
+def page_proxy():
+    proxy_cfg = _proxy_config()
+    mitm_cfg = dict(proxy_cfg.get("mitm", {}) or {})
+    return render_template(
+        "proxy.html",
+        proxy_defaults={
+            "implementation": proxy_cfg.get("implementation", "reverse_proxy"),
+            "retention_limit": proxy_cfg.get("retention_limit", 500),
+            "mitm": {
+                "listen_host": mitm_cfg.get("listen_host", "127.0.0.1"),
+                "listen_port": mitm_cfg.get("listen_port", 8080),
+                "cert_dir": mitm_cfg.get("cert_dir", "data/proxy_certs"),
+            },
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # API: Reports
 # ---------------------------------------------------------------------------
@@ -259,15 +386,22 @@ def api_list_reports():
 
 @app.route("/api/reports/<run_id>/html")
 def api_report_html(run_id: str):
-    run_dir = _runs_dir() / run_id
-    if not (run_dir / "report.html").exists():
+    try:
+        run_dir = resolve_child_path(_runs_dir(), run_id)
+    except ValueError:
+        return jsonify({"error": "Invalid run id"}), 400
+    if not run_dir.is_dir() or not (run_dir / "report.html").exists():
         return jsonify({"error": "Report not found"}), 404
     return send_from_directory(str(run_dir), "report.html")
 
 
 @app.route("/api/reports/<run_id>/summary")
 def api_report_summary(run_id: str):
-    summary_file = _runs_dir() / run_id / "summary.json"
+    try:
+        run_dir = resolve_child_path(_runs_dir(), run_id)
+    except ValueError:
+        return jsonify({"error": "Invalid run id"}), 400
+    summary_file = run_dir / "summary.json"
     if not summary_file.exists():
         return jsonify({"error": "Summary not found"}), 404
     with summary_file.open("r", encoding="utf-8") as f:
@@ -357,12 +491,10 @@ def api_campaign_run():
         try:
             _jobs[job_id]["status"] = "running"
 
-            # Load base config
             cfg_path = PROJECT_ROOT / "configs" / "campaign.yaml"
             with cfg_path.open("r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
 
-            # Override with user settings
             if data.get("model"):
                 cfg.setdefault("llm", {}).setdefault("params", {})["model"] = data["model"]
             if data.get("prompt_count"):
@@ -374,182 +506,16 @@ def api_campaign_run():
             if data.get("campaign_name"):
                 cfg.setdefault("run", {})["name"] = data["campaign_name"]
 
-            # Run the pipeline (reuse CLI logic inline)
-            from leakcheck.attack.mutate import mutate_prompt  # type: ignore[import]
-            from leakcheck.common.log_utils import log_line  # type: ignore[import]
-            from leakcheck.common.run_utils import (  # type: ignore[import]
-                append_jsonl,
-                copy_dataset_snapshot,
-                create_run_folder,
-                resolve_project_path,  # type: ignore[import]
-                save_config_snapshot,
-                save_json,
-            )
-            from leakcheck.common.schemas import (  # type: ignore[import]
-                MutationRecord,
-            )
-            from leakcheck.datasets.ingest import ingest_local_csv, ingest_local_jsonl  # type: ignore[import]
-            from leakcheck.detect.detector import Detector  # type: ignore[import]
-            from leakcheck.llm.client import LLMClient  # type: ignore[import]
-            from leakcheck.reporting.report_html import write_report_html  # type: ignore[import]
-            from leakcheck.reporting.report_md import write_report_md  # type: ignore[import]
-            from leakcheck.reporting.summarize import summarize_results  # type: ignore[import]
-            from leakcheck.scoring.score import (  # type: ignore[import]
-                compute_severity,
-                load_scoring_policy,
-                score_output_fields,
-            )
+            def _progress(progress: CampaignProgress) -> None:
+                if progress.total:
+                    _jobs[job_id]["total"] = progress.total
+                _jobs[job_id]["progress"] = progress.processed
+                if progress.run_dir:
+                    _jobs[job_id]["run_dir"] = progress.run_dir
+                if progress.message:
+                    _jobs[job_id]["message"] = progress.message
 
-            # Create run folder
-            output_root = resolve_project_path(cfg["run"]["output_root"])
-            run_name = cfg["run"].get("name", "web_campaign")
-            seed = int(cfg["run"].get("seed", 42))
-            run_dir = create_run_folder(output_root, run_name)
-            save_config_snapshot(cfg, run_dir)
-
-            ds_path = resolve_project_path(cfg["dataset"]["path"])
-            id_field = cfg["dataset"].get("id_field", "id")
-            text_field = cfg["dataset"].get("text_field", "text")
-            cat_field = cfg["dataset"].get("category_field", "category")
-            copy_dataset_snapshot(ds_path, run_dir)
-
-            # Ingest
-            if ds_path.endswith(".csv"):
-                prompts = ingest_local_csv(ds_path, id_field, text_field, cat_field)
-            else:
-                prompts = ingest_local_jsonl(ds_path, id_field, text_field, cat_field)
-
-            # Apply limit
-            limit = cfg.get("attack", {}).get("limit")
-            if limit:
-                prompts = prompts[:int(limit)]
-
-            _jobs[job_id]["total"] = len(prompts)
-
-            results_path = run_dir / "results.jsonl"
-            log_path = run_dir / "logs.txt"
-
-            client = LLMClient(
-                endpoint=cfg["llm"]["endpoint"],
-                timeout_s=int(cfg["llm"].get("timeout_s", 60)),
-                retries=int(cfg["llm"].get("retries", 2)),
-            )
-            llm_params = dict(cfg["llm"].get("params", {}))
-            det_cfg = cfg.get("detection", {})
-            detector = Detector(
-                similarity_model=resolve_project_path(det_cfg["similarity_model"]) if det_cfg.get("similarity_model") else DEFAULT_SIMILARITY_MODEL,
-                similarity_threshold=float(det_cfg.get("similarity_threshold", 0.50)),
-                use_learned=bool(det_cfg.get("use_learned_anchors", False)),
-                learned_path=resolve_project_path(str(det_cfg["learned_anchors_path"])) if det_cfg.get("learned_anchors_path") else None,
-            )
-            scoring_policy = load_scoring_policy(resolve_project_path(cfg["scoring"]["thresholds_file"]))
-            attack_enabled = bool(cfg.get("attack", {}).get("enabled", True))
-
-            # Resolve operators from level if provided, otherwise use explicit list
-            level = int(cfg.get("attack", {}).get("mutation_level", 0))
-            ops = list(cfg.get("attack", {}).get("operators", []))
-
-            # If level is set (e.g. from UI slider), it overrides the default config operators
-            if level > 0:
-                benign_base = ["benign_rephrase_prefix", "benign_wrapper"]
-                if level == 1:
-                    ops = ["format_shift"] + benign_base
-                elif level == 2:
-                    ops = ["format_shift", "obfuscate_spacing"] + benign_base
-                elif level == 3:
-                    ops = ["format_shift", "obfuscate_spacing", "prefix_injection"] + benign_base
-                elif level == 4:
-                    ops = ["format_shift", "obfuscate_spacing", "prefix_injection", "role_wrapper"] + benign_base
-                elif level >= 5:
-                    ops = ["format_shift", "obfuscate_spacing", "prefix_injection", "role_wrapper", "instruction_stack"] + benign_base
-
-            # Ensure we have at least one operator if level was requested but no mapping found
-            if level > 0 and not ops:
-                 ops = ["format_shift"] + ["benign_rephrase_prefix"]
-
-            mutations_per = int(cfg.get("attack", {}).get("mutations_per_prompt", 1))
-
-            all_results = []
-
-            for idx, p in enumerate(prompts):
-                _jobs[job_id]["progress"] = idx + 1
-
-                # Build mutation records (same logic as CLI)
-                mutation_records = []
-                if attack_enabled:
-                    for mi in range(1, mutations_per + 1):
-                        mutation_records.append(mutate_prompt(p, ops, seed=seed, idx=mi))
-                else:
-                    mutation_records.append(MutationRecord(
-                        base_id=p.id, mutation_id=f"{p.id}_m0",
-                        operators=[], text=p.text, seed=seed,
-                    ))
-
-                success_flags: list[int] = []
-                variant_runs: list[VariantRun] = []
-                for m in mutation_records:
-                    prompt_id = m.mutation_id
-
-                    # LLM call
-                    llm_resp = client.generate(m.text, params=dict(llm_params))
-                    llm_resp.prompt_id = prompt_id
-
-                    # Detect
-                    det = detector.detect(
-                        prompt_id=prompt_id,
-                        category=p.category,
-                        prompt_text=m.text,
-                        response_text=llm_resp.response_text,
-                    )
-                    success_flags.append(1 if det.verdict == "attack_success" else 0)
-                    variant_runs.append((m, llm_resp, det))
-
-                final_repeatability = sum(success_flags) / max(1, len(success_flags))
-
-                for m, llm_resp, det in variant_runs:
-                    score = compute_severity(det, repeatability=final_repeatability, policy=scoring_policy)
-                    record = {
-                        "base_id": p.id,
-                        "prompt_id": m.mutation_id,
-                        "category": p.category,
-                        "operators": m.operators,
-                        "prompt_text": m.text,
-                        "response_text": llm_resp.response_text,
-                        "latency_ms": llm_resp.latency_ms,
-                        "verdict": det.verdict,
-                        "is_attempt": det.verdict in ("attack_attempt", "attack_success"),
-                        "is_success": det.verdict == "attack_success",
-                        "over_refusal": bool(det.evidence.get("over_refusal", False)),
-                        "confidence": det.confidence,
-                        "rule_hits": det.rule_hits,
-                        "similarity_score": det.similarity_score,
-                        "response_signals": det.response_signals,
-                        "evidence": det.evidence,
-                        **score_output_fields(score),
-                    }
-                    append_jsonl(results_path, record)
-                    all_results.append(record)
-
-                log_line(log_path, f"Processed base prompt {p.id} with {len(mutation_records)} variants")
-
-            # Summary + reports
-            summary = summarize_results(all_results)
-            run_meta = {
-                "run_id": run_dir.name,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "campaign_name": cfg.get("run", {}).get("name", ""),
-                "config": cfg,
-                "config_snapshot_path": str(run_dir / "config_snapshot.yaml"),
-                "results": str(results_path),
-                "dataset_snapshot": str(run_dir / "dataset_snapshot"),
-            }
-            save_json(run_dir / "summary.json", summary)
-
-            if cfg.get("reporting", {}).get("output_report_md", True):
-                write_report_md(run_dir / "report.md", run_meta, summary)
-            if cfg.get("reporting", {}).get("output_report_html", True):
-                write_report_html(run_dir / "report.html", run_meta, summary)
-
+            run_dir = run_campaign_config(cfg, cfg_label=str(cfg_path), progress_callback=_progress)
             _jobs[job_id]["status"] = "done"
             _jobs[job_id]["run_dir"] = run_dir.name
 
@@ -573,17 +539,329 @@ def api_campaign_status(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# API: Proxy Capture
+# ---------------------------------------------------------------------------
+@app.route("/api/proxy/start", methods=["POST"])
+def api_proxy_start():
+    global _proxy_runtime
+    data = request.get_json(silent=True) or {}
+    target_url = str(data.get("target_url", "") or "")
+    mode = str(data.get("mode", "passive") or "passive")
+    if mode not in {"passive", "replay"}:
+        return jsonify({"error": "Only passive and replay proxy modes are available"}), 400
+    proxy_cfg = _proxy_config()
+    mitm_cfg = dict(proxy_cfg.get("mitm", {}) or {})
+    implementation = str(data.get("implementation", proxy_cfg.get("implementation", "reverse_proxy")) or "reverse_proxy")
+    if implementation not in {"reverse_proxy", "mitm"}:
+        return jsonify({"error": "Proxy implementation must be reverse_proxy or mitm"}), 400
+    retention_limit = int(data.get("retention_limit", proxy_cfg.get("retention_limit", 500)) or 500)
+    listen_host = str(data.get("listen_host", mitm_cfg.get("listen_host", "127.0.0.1")) or "127.0.0.1")
+    default_port = 8080 if implementation == "mitm" else 8765
+    configured_port = mitm_cfg.get("listen_port", default_port) if implementation == "mitm" else default_port
+    listen_port = int(data.get("listen_port", configured_port) or configured_port)
+    if listen_host not in {"127.0.0.1", "localhost"}:
+        return jsonify({"error": "Proxy listener is restricted to localhost"}), 400
+    try:
+        cert_dir = _resolve_proxy_cert_dir(str(data.get("cert_dir", mitm_cfg.get("cert_dir", "")) or ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    _stop_proxy_runtime()
+    store = _proxy_capture_store()
+    session = store.start_session(
+        target_url=target_url,
+        mode=mode,
+        retention_limit=retention_limit,
+    )
+    if mode == "passive" and implementation == "reverse_proxy":
+        try:
+            _proxy_runtime = ReverseProxyRuntime(
+                store=store,
+                session_id=str(session["session_id"]),
+                target_url=target_url,
+                listen_host="127.0.0.1",
+                listen_port=listen_port,
+            )
+            _proxy_runtime.start()
+            session = store.update_session(
+                str(session["session_id"]),
+                {
+                    "listen_url": _proxy_runtime.listen_url,
+                    "capture_mode": "reverse_proxy",
+                    "listen_host": "127.0.0.1",
+                    "listen_port": listen_port,
+                },
+            )
+        except Exception as exc:
+            store.stop_session(str(session["session_id"]))
+            return jsonify({"error": str(exc)}), 400
+    elif mode == "passive" and implementation == "mitm":
+        try:
+            _proxy_runtime = BrowserMitmProxyRuntime(
+                store=store,
+                session_id=str(session["session_id"]),
+                listen_host=listen_host,
+                listen_port=listen_port,
+                cert_dir=str(cert_dir),
+            )
+            _proxy_runtime.start()
+            session_updates = _proxy_runtime.session_updates()
+            session = store.update_session(str(session["session_id"]), session_updates)
+            _proxy_runtime.write_certificate_status(_proxy_sessions_dir() / str(session["session_id"]))
+        except Exception as exc:
+            store.stop_session(str(session["session_id"]))
+            return jsonify({"error": str(exc)}), 400
+    return jsonify(session)
+
+
+@app.route("/api/proxy/certificate")
+def api_proxy_certificate():
+    try:
+        cert_dir = _resolve_proxy_cert_dir(request.args.get("cert_dir"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(BrowserMitmCertificateManager(cert_dir).payload())
+
+
+@app.route("/api/proxy/stop", methods=["POST"])
+def api_proxy_stop():
+    data = request.get_json(silent=True) or {}
+    _stop_proxy_runtime()
+    try:
+        session = _proxy_capture_store().stop_session(data.get("session_id"))
+    except FileNotFoundError:
+        return jsonify({"error": "Proxy session not found"}), 404
+    return jsonify(session)
+
+
+@app.route("/api/proxy/status")
+def api_proxy_status():
+    return jsonify(_proxy_capture_store().status())
+
+
+@app.route("/api/proxy/sessions")
+def api_proxy_sessions():
+    return jsonify(_proxy_capture_store().list_sessions())
+
+
+@app.route("/api/proxy/sessions/<session_id>")
+def api_proxy_session_detail(session_id: str):
+    try:
+        return jsonify(_proxy_session_payload(session_id))
+    except FileNotFoundError:
+        return jsonify({"error": "Proxy session not found"}), 404
+
+
+@app.route("/api/proxy/sessions/<session_id>/export", methods=["POST"])
+def api_proxy_session_export(session_id: str):
+    data = request.get_json(silent=True) or {}
+    include_bodies = bool(data.get("include_bodies", False))
+    try:
+        payload = _proxy_session_payload(session_id)
+    except FileNotFoundError:
+        return jsonify({"error": "Proxy session not found"}), 404
+    if not include_bodies:
+        exchanges = _proxy_capture_store().load_exchanges(session_id)
+        payload["exchanges"] = [sanitize_exchange_payload(exchange, include_bodies=False) for exchange in exchanges]
+        payload = redact_scored_payload_bodies(payload)
+    export_path = _proxy_sessions_dir() / session_id / "export.json"
+    with export_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    report_md = write_proxy_report_md(_proxy_sessions_dir() / session_id / "report.md", payload)
+    report_html = write_proxy_report_html(_proxy_sessions_dir() / session_id / "report.html", payload)
+    return jsonify({
+        "status": "exported",
+        "path": str(export_path),
+        "report_md": str(report_md),
+        "report_html": str(report_html),
+        **payload,
+    })
+
+
+@app.route("/api/proxy/sessions/<session_id>/replay", methods=["POST"])
+def api_proxy_session_replay(session_id: str):
+    data = request.get_json(silent=True) or {}
+    exchange_id = str(data.get("exchange_id", "") or "")
+    try:
+        exchanges = _proxy_capture_store().load_exchanges(session_id)
+        _proxy_capture_store().get_session(session_id)
+    except FileNotFoundError:
+        return jsonify({"error": "Proxy session not found"}), 404
+    if exchange_id:
+        exchanges = [exchange for exchange in exchanges if exchange.exchange_id == exchange_id]
+    if not exchanges:
+        return jsonify({"error": "No replayable exchanges found"}), 404
+    timeout_s = int(data.get("timeout_s", 30) or 30)
+    results = []
+    for exchange in exchanges:
+        result = replay_exchange(exchange, timeout_s=timeout_s)
+        results.append(
+            {
+                "replay": replay_payload(result),
+                "comparison": compare_replay(exchange, result),
+            }
+        )
+    replay_path = _proxy_sessions_dir() / session_id / "replay_results.json"
+    with replay_path.open("w", encoding="utf-8") as handle:
+        json.dump(results, handle, ensure_ascii=False, indent=2)
+    return jsonify({"status": "replayed", "path": str(replay_path), "results": results})
+
+
+@app.route("/api/proxy/exchanges", methods=["POST"])
+def api_proxy_record_exchange():
+    data = request.get_json(force=True)
+    try:
+        exchange = _proxy_capture_store().record_exchange(
+            session_id=data.get("session_id"),
+            method=str(data.get("method", "POST")),
+            url=str(data.get("url", "")),
+            request_headers=dict(data.get("request_headers", {}) or {}),
+            request_body=data.get("request_body"),
+            response_status=data.get("response_status"),
+            response_headers=dict(data.get("response_headers", {}) or {}),
+            response_body=data.get("response_body"),
+            transport=str(data.get("transport", "http")),
+            metadata=dict(data.get("metadata", {}) or {}),
+        )
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(exchange.model_dump(mode="json"))
+
+
+@app.route("/api/proxy/active/preview", methods=["POST"])
+def api_proxy_active_preview():
+    data = request.get_json(force=True)
+    session_id = str(data.get("session_id", "") or _proxy_capture_store().active_session_id or "")
+    if not session_id:
+        return jsonify({"error": "Active injection requires a proxy session"}), 400
+    cfg = dict(data.get("config", {}) or {})
+    runner = ActiveInjectionRunner(
+        store=_proxy_capture_store(),
+        session_id=session_id,
+        cfg=cfg,
+        audit_log_path=_active_audit_log_path(session_id),
+        timeout_s=int(data.get("timeout_s", 30) or 30),
+    )
+    return jsonify(runner.preview(str(data.get("target_url", "")), [str(item) for item in data.get("prompts", [])]))
+
+
+@app.route("/api/proxy/active/run", methods=["POST"])
+def api_proxy_active_run():
+    global _active_runner
+    data = request.get_json(force=True)
+    session_id = str(data.get("session_id", "") or _proxy_capture_store().active_session_id or "")
+    if not session_id:
+        return jsonify({"error": "Active injection requires a proxy session"}), 400
+    try:
+        _proxy_capture_store().get_session(session_id)
+    except FileNotFoundError:
+        return jsonify({"error": "Proxy session not found"}), 404
+    _active_runner = ActiveInjectionRunner(
+        store=_proxy_capture_store(),
+        session_id=session_id,
+        cfg=dict(data.get("config", {}) or {}),
+        audit_log_path=_active_audit_log_path(session_id),
+        timeout_s=int(data.get("timeout_s", 30) or 30),
+    )
+    results = _active_runner.run(
+        str(data.get("target_url", "")),
+        [str(item) for item in data.get("prompts", [])],
+    )
+    return jsonify({"session_id": session_id, "results": [result.__dict__ for result in results]})
+
+
+@app.route("/api/proxy/active/stop", methods=["POST"])
+def api_proxy_active_stop():
+    if _active_runner is not None:
+        _active_runner.stop()
+        return jsonify({"status": "stop_requested", "runner": _active_runner.status()})
+    return jsonify({"status": "idle"})
+
+
+@app.route("/api/proxy/active/status")
+def api_proxy_active_status():
+    session_id = str(request.args.get("session_id", "") or _proxy_capture_store().active_session_id or "")
+    audit_log = _read_active_audit_log(session_id) if session_id else []
+    session_status: dict[str, Any] = {"running": False}
+    if session_id:
+        try:
+            session = _proxy_capture_store().get_session(session_id)
+            session_status = dict(session.get("active_injection_status", {}) or {"running": False})
+        except FileNotFoundError:
+            session_status = {"running": False}
+    runner_status = (
+        _active_runner.status()
+        if _active_runner is not None and (not session_id or _active_runner.session_id == session_id)
+        else session_status
+    )
+    return jsonify({"session_id": session_id, "runner": runner_status, "audit_log": audit_log})
+
+
+@app.route("/api/proxy/sessions/<session_id>/active/audit")
+def api_proxy_active_audit(session_id: str):
+    try:
+        _proxy_capture_store().get_session(session_id)
+    except FileNotFoundError:
+        return jsonify({"error": "Proxy session not found"}), 404
+    limit = int(request.args.get("limit", "100") or 100)
+    return jsonify({"session_id": session_id, "audit_log": _read_active_audit_log(session_id, limit=limit)})
+
+
+# ---------------------------------------------------------------------------
+# API: Evaluation
+# ---------------------------------------------------------------------------
+@app.route("/api/evaluation/results", methods=["POST"])
+def api_evaluation_results():
+    data = request.get_json(force=True)
+    results_path_raw = str(data.get("results_path", "") or "")
+    if not results_path_raw:
+        return jsonify({"error": "results_path is required"}), 400
+    results_path = Path(results_path_raw)
+    if not results_path.is_absolute():
+        results_path = PROJECT_ROOT / results_path
+    if not results_path.exists():
+        return jsonify({"error": "results file not found"}), 404
+    out_path = _evaluation_dir() / f"{results_path.parent.name}_metrics.json"
+    metrics = evaluate_results_file(results_path, out_path=out_path)
+    return jsonify({"metrics": metrics, "path": str(out_path)})
+
+
+@app.route("/api/evaluation/benchmark", methods=["POST", "GET"])
+def api_evaluation_benchmark():
+    out_path = _evaluation_dir() / "benchmark_comparison.md"
+    write_benchmark_markdown(out_path)
+    return jsonify({"path": str(out_path), **benchmark_payload()})
+
+
+# ---------------------------------------------------------------------------
 # API: Ping LLM
 # ---------------------------------------------------------------------------
 @app.route("/api/ping")
 def api_ping():
+    llm_cfg = {
+        "provider": "openai_compatible",
+        "endpoint": LLM_ENDPOINT,
+        "timeout_s": 10,
+        "retries": 0,
+        "params": {"model": DEFAULT_MODEL, "temperature": 0.0, "max_tokens": 5},
+    }
     try:
-        resp = requests.post(
-            LLM_ENDPOINT,
-            json={"model": DEFAULT_MODEL, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
-            timeout=10,
+        normalized = validate_llm_config(llm_cfg)
+        client = LLMClient(
+            endpoint=normalized["endpoint"],
+            timeout_s=normalized["timeout_s"],
+            retries=normalized["retries"],
+            provider=normalized["provider"],
         )
-        return jsonify({"status": "ok", "code": resp.status_code})
+        resp = client.generate("hi", params=llm_cfg["params"])
+        return jsonify({
+            "status": "ok",
+            "provider": normalized["provider"],
+            "endpoint": normalized["safe_endpoint"],
+            "model": resp.model,
+            "latency_ms": resp.latency_ms,
+            "response_shape": response_shape(resp.raw),
+        })
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
 
@@ -592,6 +870,8 @@ def api_ping():
 # Run
 # ---------------------------------------------------------------------------
 def start_server(host: str = "0.0.0.0", port: int = 5000, debug: bool = True):
+    if debug and not _is_localhost_host(host):
+        print("  WARNING: V1 dashboard is not production-authenticated. Use only on localhost or trusted networks.")
     print(f"\n  LeakCheck Dashboard → http://localhost:{port}\n")
     app.run(host=host, port=port, debug=debug, use_reloader=False)
 

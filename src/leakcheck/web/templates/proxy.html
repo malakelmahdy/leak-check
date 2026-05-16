@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeakCheck - Proxy Capture</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <nav class="navbar">
+        <a href="/" class="logo">Leak<span>Check</span></a>
+        <button class="menu-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')">Menu</button>
+        <ul class="nav-links">
+            <li><a href="/"><span class="icon">LC</span> Home</a></li>
+            <li><a href="/campaigns"><span class="icon">Run</span> Campaigns</a></li>
+            <li><a href="/reports"><span class="icon">Rpt</span> Reports</a></li>
+            <li><a href="/chat"><span class="icon">Chat</span> Chat</a></li>
+            <li><a href="/proxy" class="active"><span class="icon">Px</span> Proxy</a></li>
+        </ul>
+    </nav>
+
+    <div class="page-body">
+        {% if show_v1_security_warning %}
+        <div class="security-warning">{{ v1_security_warning }}</div>
+        {% endif %}
+
+        <h1 class="page-title">Proxy Capture</h1>
+        <p class="section-subtitle">
+            Passive capture stores sanitized HTTP exchanges locally and reconstructs prompt/response conversations for scoring.
+        </p>
+
+        <div class="proxy-layout">
+            <section class="config-panel">
+                <h3>Capture Controls</h3>
+                <div class="security-warning">
+                    Proxy traffic can contain sensitive request and response bodies. Header tokens are redacted, but captured body data is stored locally under data/proxy_sessions.
+                </div>
+                <div class="form-group">
+                    <label for="proxy-implementation">Capture Implementation</label>
+                    <select id="proxy-implementation" class="form-control">
+                        <option value="reverse_proxy">Reverse proxy for one target</option>
+                        <option value="mitm">Browser proxy listener</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="proxy-target">Target URL</label>
+                    <input id="proxy-target" class="form-control" placeholder="http://127.0.0.1:3000">
+                </div>
+                <div class="form-group">
+                    <label for="proxy-retention">Retention Limit</label>
+                    <input id="proxy-retention" class="form-control" type="number" min="1" value="500">
+                </div>
+                <div class="form-group">
+                    <label for="proxy-port">Local Listen Port</label>
+                    <input id="proxy-port" class="form-control" type="number" min="1024" max="65535" value="8765">
+                </div>
+                <div class="form-group">
+                    <label for="proxy-host">Local Listen Host</label>
+                    <input id="proxy-host" class="form-control" value="127.0.0.1">
+                </div>
+                <div class="form-group" id="proxy-cert-dir-group" hidden>
+                    <label for="proxy-cert-dir">Certificate Directory</label>
+                    <input id="proxy-cert-dir" class="form-control" value="{{ proxy_defaults.mitm.cert_dir }}">
+                </div>
+                <div class="proxy-actions">
+                    <button class="btn btn-primary" id="proxy-start">Start Passive Capture</button>
+                    <button class="btn btn-danger" id="proxy-stop">Stop</button>
+                </div>
+                <div class="proxy-status" id="proxy-status">Status: idle</div>
+                <div class="proxy-cert-panel" id="proxy-cert-panel" hidden></div>
+            </section>
+
+            <section class="progress-panel">
+                <h3>Sessions</h3>
+                <div id="proxy-sessions" class="proxy-session-list"></div>
+            </section>
+        </div>
+
+        <section class="proxy-detail-panel">
+            <div class="proxy-detail-header">
+                <h2 class="section-title">Session Detail</h2>
+                <div class="proxy-actions">
+                    <button class="btn btn-secondary" id="proxy-replay" disabled>Replay</button>
+                    <button class="btn btn-secondary" id="proxy-export" disabled>Export</button>
+                </div>
+            </div>
+            <div id="proxy-detail-empty" class="empty-state">
+                <p>Select a capture session to inspect traffic and findings.</p>
+            </div>
+            <div id="proxy-detail" class="proxy-detail" hidden>
+                <div class="proxy-score-summary" id="proxy-score-summary"></div>
+                <div class="proxy-table-wrap">
+                    <table class="proxy-table">
+                        <thead>
+                            <tr>
+                                <th>Turn</th>
+                                <th>Method</th>
+                                <th>URL</th>
+                                <th>Status</th>
+                                <th>Stream</th>
+                                <th>Finding</th>
+                            </tr>
+                        </thead>
+                        <tbody id="proxy-traffic-body"></tbody>
+                    </table>
+                </div>
+                <div class="proxy-conversation" id="proxy-conversation"></div>
+            </div>
+        </section>
+
+        <section class="proxy-detail-panel">
+            <h2 class="section-title">Active Injection</h2>
+            <div class="security-warning">
+                Active injection is disabled unless explicitly enabled in the request config. Dry-run preview is the default.
+            </div>
+            <div class="proxy-active-grid">
+                <div>
+                    <div class="form-group">
+                        <label for="active-target">Injection Target URL</label>
+                        <input id="active-target" class="form-control" placeholder="http://127.0.0.1:3000/api/chat">
+                    </div>
+                    <div class="form-group">
+                        <label for="active-prompts">Prompts</label>
+                        <textarea id="active-prompts" class="form-control" rows="6" placeholder="One synthetic audit prompt per line"></textarea>
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label>
+                            <input id="active-enabled" type="checkbox">
+                            Explicitly enable active mode
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input id="active-dry-run" type="checkbox" checked>
+                            Dry-run preview
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label for="active-allowlist">Allowlist Hosts</label>
+                        <input id="active-allowlist" class="form-control" placeholder="127.0.0.1, localhost">
+                    </div>
+                    <div class="form-group">
+                        <label for="active-max-count">Max Prompt Count</label>
+                        <input id="active-max-count" class="form-control" type="number" value="5" min="1">
+                    </div>
+                    <div class="proxy-actions">
+                        <button class="btn btn-secondary" id="active-preview">Preview</button>
+                        <button class="btn btn-primary" id="active-run">Run</button>
+                        <button class="btn btn-danger" id="active-stop">Stop</button>
+                    </div>
+                    <div class="proxy-status" id="active-status">Active status: idle</div>
+                </div>
+            </div>
+            <pre id="active-result" class="proxy-active-result"></pre>
+            <pre id="active-audit-log" class="proxy-active-result"></pre>
+        </section>
+    </div>
+
+    <dialog class="active-confirm-dialog" id="active-confirm-dialog">
+        <form method="dialog">
+            <h3>Confirm Active Injection</h3>
+            <dl id="active-confirm-summary"></dl>
+            <div class="security-warning">Non-dry-run active injection sends prompts to the selected target.</div>
+            <div class="proxy-actions">
+                <button class="btn btn-secondary" value="cancel">Cancel</button>
+                <button class="btn btn-danger" value="confirm">Confirm Run</button>
+            </div>
+        </form>
+    </dialog>
+
+    <div class="toast-container" id="toast-container"></div>
+    <script src="/static/app.js"></script>
+    <script>
+        let selectedProxySession = null;
+        const proxyDefaults = {{ proxy_defaults | tojson }};
+
+        function escapeHtml(value) {
+            return String(value || '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#039;');
+        }
+
+        async function proxyJson(url, options = {}) {
+            const resp = await fetch(url, {
+                headers: { 'Content-Type': 'application/json' },
+                ...options,
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'Proxy request failed');
+            return data;
+        }
+
+        function renderProxyStatus(status) {
+            const el = document.getElementById('proxy-status');
+            if (status.running) {
+                const mode = status.capture_mode ? `, ${status.capture_mode}` : '';
+                el.textContent = `Status: running (${status.session_id}${mode})`;
+                el.style.color = 'var(--success)';
+            } else {
+                el.textContent = 'Status: idle';
+                el.style.color = 'var(--muted)';
+            }
+            renderCertificateStatus(status.certificate);
+        }
+
+        function renderCertificateStatus(certificate) {
+            const panel = document.getElementById('proxy-cert-panel');
+            if (!certificate) {
+                panel.hidden = true;
+                panel.innerHTML = '';
+                return;
+            }
+            panel.hidden = false;
+            const instructions = (certificate.instructions || []).map(item => `<li>${escapeHtml(item)}</li>`).join('');
+            const generationError = certificate.generation_error ? `<p>${escapeHtml(certificate.generation_error)}</p>` : '';
+            panel.innerHTML = `
+                <h4>Browser Proxy Certificate</h4>
+                <p>${escapeHtml(certificate.warning || 'Certificate workflow is manual.')}</p>
+                ${generationError}
+                <dl>
+                    <dt>Certificate directory</dt>
+                    <dd><code>${escapeHtml(certificate.cert_dir || '')}</code></dd>
+                    <dt>CA certificate</dt>
+                    <dd><code>${escapeHtml(certificate.ca_cert_path || '')}</code></dd>
+                    <dt>Status</dt>
+                    <dd>${certificate.generated ? 'generated' : 'not generated'}; manual install only</dd>
+                </dl>
+                <ul>${instructions}</ul>
+            `;
+        }
+
+        async function loadProxyStatus() {
+            renderProxyStatus(await proxyJson('/api/proxy/status'));
+        }
+
+        async function loadProxySessions() {
+            const sessions = await proxyJson('/api/proxy/sessions');
+            const container = document.getElementById('proxy-sessions');
+            if (!sessions.length) {
+                container.innerHTML = '<div class="empty-state"><p>No proxy sessions yet.</p></div>';
+                return;
+            }
+            container.innerHTML = sessions.map(session => `
+                <button class="proxy-session-item" data-session="${escapeHtml(session.session_id)}">
+                    <strong>${escapeHtml(session.session_id)}</strong>
+                    <span>${escapeHtml(session.status)} - ${escapeHtml(session.capture_mode || session.mode || 'proxy')} - ${Number(session.exchange_count || 0)} exchanges</span>
+                    <small>${escapeHtml(session.target_url || 'No target URL')}</small>
+                </button>
+            `).join('');
+            container.querySelectorAll('.proxy-session-item').forEach(button => {
+                button.addEventListener('click', () => loadProxyDetail(button.dataset.session));
+            });
+        }
+
+        function findingLabel(finding) {
+            const detection = finding?.detection || {};
+            const verdict = detection.verdict || 'safe';
+            const score = Number(detection.signoff_severity || detection.severity || 0).toFixed(1);
+            return `${escapeHtml(verdict)} (${score})`;
+        }
+
+        async function loadProxyDetail(sessionId) {
+            selectedProxySession = sessionId;
+            const payload = await proxyJson(`/api/proxy/sessions/${sessionId}`);
+            renderCertificateStatus(payload.session?.certificate);
+            const scoring = payload.scoring || {};
+            document.getElementById('proxy-score-summary').innerHTML = `
+                <div><strong>${Number(scoring.turn_count || 0)}</strong><span>Scored turns</span></div>
+                <div><strong>${Number(scoring.finding_count || 0)}</strong><span>Findings</span></div>
+                <div><strong>${Number(scoring.worst_leak_severity || 0).toFixed(1)}</strong><span>Worst leak</span></div>
+                <div><strong>${Number(scoring.worst_attack_risk || 0).toFixed(1)}</strong><span>Worst attack</span></div>
+            `;
+            document.getElementById('proxy-export').disabled = false;
+            document.getElementById('proxy-replay').disabled = false;
+            document.getElementById('proxy-detail-empty').hidden = true;
+            document.getElementById('proxy-detail').hidden = false;
+            await loadActiveStatus();
+
+            const findingsByExchange = new Map();
+            (payload.findings || []).forEach(finding => {
+                findingsByExchange.set(finding.exchange_id, finding);
+            });
+
+            const rows = (payload.exchanges || []).map((exchange, index) => {
+                const finding = findingsByExchange.get(exchange.exchange_id);
+                return `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td>${escapeHtml(exchange.method || '')}</td>
+                        <td><code>${escapeHtml(exchange.url || '')}</code></td>
+                        <td>${escapeHtml(exchange.response_status || '')}</td>
+                        <td>${escapeHtml(exchange.metadata?.stream_reconstruction?.stream_format || '')}</td>
+                        <td>${finding ? findingLabel(finding) : 'not scored'}</td>
+                    </tr>
+                `;
+            }).join('');
+            document.getElementById('proxy-traffic-body').innerHTML = rows || '<tr><td colspan="6">No exchanges captured.</td></tr>';
+
+            const turns = payload.conversation?.turns || [];
+            document.getElementById('proxy-conversation').innerHTML = turns.map(turn => `
+                <article class="proxy-turn">
+                    <div>
+                        <h4>Turn ${Number(turn.turn_number || 0)} Prompt</h4>
+                        <pre>${escapeHtml(turn.prompt_text || '')}</pre>
+                    </div>
+                    <div>
+                        <h4>Turn ${Number(turn.turn_number || 0)} Response</h4>
+                        <pre>${escapeHtml(turn.response_text || '')}</pre>
+                    </div>
+                </article>
+            `).join('');
+        }
+
+        document.getElementById('proxy-start').addEventListener('click', async () => {
+            try {
+                const implementation = document.getElementById('proxy-implementation').value;
+                const session = await proxyJson('/api/proxy/start', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        implementation,
+                        target_url: document.getElementById('proxy-target').value,
+                        retention_limit: Number(document.getElementById('proxy-retention').value || 500),
+                        listen_port: Number(document.getElementById('proxy-port').value || 8765),
+                        listen_host: document.getElementById('proxy-host').value || '127.0.0.1',
+                        cert_dir: document.getElementById('proxy-cert-dir').value || proxyDefaults.mitm.cert_dir,
+                    }),
+                });
+                showToast(`Proxy capture started at ${session.listen_url || 'local listener'}`, 'success');
+                renderProxyStatus({ running: true, ...session });
+                await loadProxySessions();
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        document.getElementById('proxy-stop').addEventListener('click', async () => {
+            try {
+                await proxyJson('/api/proxy/stop', { method: 'POST', body: JSON.stringify({}) });
+                showToast('Proxy capture stopped', 'success');
+                await loadProxyStatus();
+                await loadProxySessions();
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        async function syncProxyImplementation() {
+            const implementation = document.getElementById('proxy-implementation').value;
+            const target = document.getElementById('proxy-target');
+            const port = document.getElementById('proxy-port');
+            const certDirGroup = document.getElementById('proxy-cert-dir-group');
+            if (implementation === 'mitm') {
+                target.placeholder = 'Optional label; browser chooses target URLs';
+                port.value = port.value === '8765' ? '8080' : port.value;
+                certDirGroup.hidden = false;
+                try {
+                    const certDir = document.getElementById('proxy-cert-dir').value || proxyDefaults.mitm.cert_dir;
+                    const certificate = await proxyJson(`/api/proxy/certificate?cert_dir=${encodeURIComponent(certDir)}`);
+                    renderCertificateStatus(certificate);
+                } catch (err) {
+                    showToast(err.message, 'error');
+                }
+            } else {
+                target.placeholder = 'http://127.0.0.1:3000';
+                port.value = port.value === '8080' ? '8765' : port.value;
+                certDirGroup.hidden = true;
+                renderCertificateStatus(null);
+            }
+        }
+
+        document.getElementById('proxy-implementation').addEventListener('change', syncProxyImplementation);
+
+        document.getElementById('proxy-export').addEventListener('click', async () => {
+            if (!selectedProxySession) return;
+            try {
+                await proxyJson(`/api/proxy/sessions/${selectedProxySession}/export`, { method: 'POST', body: JSON.stringify({}) });
+                showToast('Proxy session exported', 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        document.getElementById('proxy-replay').addEventListener('click', async () => {
+            if (!selectedProxySession) return;
+            try {
+                const result = await proxyJson(`/api/proxy/sessions/${selectedProxySession}/replay`, {
+                    method: 'POST',
+                    body: JSON.stringify({}),
+                });
+                showToast(`Replayed ${result.results.length} exchange(s)`, 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        function activePayload() {
+            const prompts = document.getElementById('active-prompts').value
+                .split('\n')
+                .map(item => item.trim())
+                .filter(Boolean);
+            return {
+                session_id: selectedProxySession,
+                target_url: document.getElementById('active-target').value,
+                prompts,
+                config: {
+                    enabled: document.getElementById('active-enabled').checked,
+                    dry_run: document.getElementById('active-dry-run').checked,
+                    allowlist: document.getElementById('active-allowlist').value
+                        .split(',')
+                        .map(item => item.trim())
+                        .filter(Boolean),
+                    max_prompt_count: Number(document.getElementById('active-max-count').value || 5),
+                },
+            };
+        }
+
+        async function runActiveEndpoint(path) {
+            try {
+                const payload = activePayload();
+                const result = await proxyJson(path, {
+                    method: 'POST',
+                    body: JSON.stringify(payload),
+                });
+                document.getElementById('active-result').textContent = JSON.stringify(result, null, 2);
+                await loadActiveStatus();
+                showToast('Active injection request completed', 'success');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
+
+        async function confirmActiveRun(payload) {
+            if (payload.config.dry_run) return true;
+            const dialog = document.getElementById('active-confirm-dialog');
+            const summary = document.getElementById('active-confirm-summary');
+            let host = '';
+            try { host = new URL(payload.target_url).hostname; } catch { host = ''; }
+            const allowlisted = payload.config.allowlist.map(item => item.toLowerCase()).includes(host.toLowerCase());
+            summary.innerHTML = `
+                <dt>Target URL</dt><dd><code>${escapeHtml(payload.target_url)}</code></dd>
+                <dt>Allowlist</dt><dd>${allowlisted ? 'host is listed' : 'host is not listed'}</dd>
+                <dt>Prompt count</dt><dd>${Number(payload.prompts.length || 0)}</dd>
+                <dt>Dry-run</dt><dd>${payload.config.dry_run ? 'yes' : 'no'}</dd>
+            `;
+            if (!dialog.showModal) {
+                return window.confirm(`Run active injection against ${payload.target_url}?`);
+            }
+            return new Promise(resolve => {
+                dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
+                dialog.showModal();
+            });
+        }
+
+        async function loadActiveStatus() {
+            const suffix = selectedProxySession ? `?session_id=${encodeURIComponent(selectedProxySession)}` : '';
+            const status = await proxyJson(`/api/proxy/active/status${suffix}`);
+            const runner = status.runner || {};
+            document.getElementById('active-status').textContent =
+                `Active status: ${runner.running ? 'running' : 'idle'}; prompt ${Number(runner.current_prompt_index || 0)}/${Number(runner.prompt_count || 0)}; injected ${Number(runner.injected_count || 0)}; errors ${Number(runner.error_count || 0)}`;
+            document.getElementById('active-audit-log').textContent = JSON.stringify(status.audit_log || [], null, 2);
+        }
+
+        document.getElementById('active-preview').addEventListener('click', () => runActiveEndpoint('/api/proxy/active/preview'));
+        document.getElementById('active-run').addEventListener('click', async () => {
+            const payload = activePayload();
+            if (!(await confirmActiveRun(payload))) return;
+            await runActiveEndpoint('/api/proxy/active/run');
+        });
+        document.getElementById('active-stop').addEventListener('click', async () => {
+            await proxyJson('/api/proxy/active/stop', { method: 'POST', body: JSON.stringify({}) });
+            await loadActiveStatus();
+            showToast('Stop requested', 'info');
+        });
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById('proxy-implementation').value = proxyDefaults.implementation || 'reverse_proxy';
+            document.getElementById('proxy-retention').value = proxyDefaults.retention_limit || 500;
+            document.getElementById('proxy-host').value = proxyDefaults.mitm?.listen_host || '127.0.0.1';
+            document.getElementById('proxy-cert-dir').value = proxyDefaults.mitm?.cert_dir || 'data/proxy_certs';
+            if ((proxyDefaults.implementation || 'reverse_proxy') === 'mitm') {
+                document.getElementById('proxy-port').value = proxyDefaults.mitm?.listen_port || 8080;
+            }
+            await syncProxyImplementation();
+            await loadProxyStatus();
+            await loadProxySessions();
+            await loadActiveStatus();
+        });
+    </script>
+</body>
+
+</html>

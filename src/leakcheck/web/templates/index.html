@@ -20,10 +20,14 @@
             <li><a href="/campaigns"><span class="icon">⚔️</span> Campaigns</a></li>
             <li><a href="/reports"><span class="icon">📊</span> Reports</a></li>
             <li><a href="/chat"><span class="icon">💬</span> Chat</a></li>
+            <li><a href="/proxy"><span class="icon">Px</span> Proxy</a></li>
         </ul>
     </nav>
 
     <div class="page-body">
+        {% if show_v1_security_warning %}
+        <div class="security-warning">{{ v1_security_warning }}</div>
+        {% endif %}
 
         <!-- Hero -->
         <section class="hero">

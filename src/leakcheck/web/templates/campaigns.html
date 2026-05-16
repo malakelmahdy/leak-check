@@ -19,10 +19,14 @@
             <li><a href="/campaigns" class="active"><span class="icon">⚔️</span> Campaigns</a></li>
             <li><a href="/reports"><span class="icon">📊</span> Reports</a></li>
             <li><a href="/chat"><span class="icon">💬</span> Chat</a></li>
+            <li><a href="/proxy"><span class="icon">Px</span> Proxy</a></li>
         </ul>
     </nav>
 
     <div class="page-body">
+        {% if show_v1_security_warning %}
+        <div class="security-warning">{{ v1_security_warning }}</div>
+        {% endif %}
         <h2 class="section-title">⚔️ Attack Campaign</h2>
         <p class="section-subtitle">Configure and launch adversarial attack campaigns against LLM models.</p>
 
@@ -71,7 +75,7 @@
                     <div class="range-wrap">
                         <input type="range" min="1" max="5" value="2" id="mutation-level"
                             oninput="updateMutationLabel()">
-                        <span class="range-val" id="mutation-level-val">Moderate (2)</span>
+                        <span class="range-val" id="mutation-level-val">Low+ (2)</span>
                     </div>
                 </div>
 
@@ -117,7 +121,7 @@
 
     <script src="/static/app.js"></script>
     <script>
-        const mutationNames = { 1: 'Basic', 2: 'Moderate', 3: 'Advanced', 4: 'Aggressive', 5: 'Maximum' };
+        const mutationNames = { 1: 'Low', 2: 'Low+', 3: 'Medium', 4: 'High', 5: 'High+' };
         let pollInterval = null;
 
         function updateMutationLabel() {
