@@ -103,8 +103,12 @@ def sanitize_for_similarity(text: str) -> str:
     return t if t else text.strip()
 
 
-def load_learned_anchors(path: str) -> list[str]:
-    """Load attack anchor texts from a JSONL file. Each line must be JSON with a 'text' key. Returns empty list if the file does not exist."""
+def load_learned_anchors(path: str, category: str | None = None) -> list[str]:
+    """Load learned attack anchors from JSONL.
+
+    New records include a category. Legacy records without category are loaded
+    for every category to preserve existing learned-anchor files.
+    """
     p = Path(path)
     if not p.exists():
         return []
@@ -114,18 +118,23 @@ def load_learned_anchors(path: str) -> list[str]:
             if not line.strip():
                 continue
             obj = json.loads(line)
+            if category and obj.get("category") not in (None, category):
+                continue
             t = obj.get("text")
             if isinstance(t, str) and t.strip():
                 anchors.append(t.strip())
     return anchors
 
 
-def append_learned_anchor(path: str, text: str) -> None:
+def append_learned_anchor(path: str, text: str, category: str | None = None) -> None:
     """Append a new learned attack anchor to the JSONL file. Creates parent directories if absent. Append-only; does not re-embed into any cached index."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"text": text}, ensure_ascii=False))
+        record = {"text": text}
+        if category:
+            record["category"] = category
+        f.write(json.dumps(record, ensure_ascii=False))
         f.write("\n")
 
 
@@ -196,7 +205,7 @@ def build_semantic_index(
     """
     anchors = list(STATIC_ANCHORS.get(category, []))
     if use_learned and learned_path:
-        anchors += load_learned_anchors(learned_path)
+        anchors += load_learned_anchors(learned_path, category=category)
     anchors_sanitized = [sanitize_for_similarity(a) for a in anchors if sanitize_for_similarity(a)]
     try:
         model = _load_embedding_model(model_name)

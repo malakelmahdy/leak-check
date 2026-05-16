@@ -417,6 +417,6 @@ class Detector:
             if not benign_ctx:
                 sanitized = sanitize_for_similarity(prompt_text)
                 if len(sanitized) >= 12:
-                    append_learned_anchor(self.learned_path, prompt_text)
+                    append_learned_anchor(self.learned_path, prompt_text, category=category)
 
         return out

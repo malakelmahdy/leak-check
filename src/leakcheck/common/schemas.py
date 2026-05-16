@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -24,6 +25,69 @@ class MutationRecord(BaseModel):
     operators: list[str]
     text: str
     seed: int
+    mutation_source: str = "static"
+    strategy_metadata: Optional["MutationStrategyMetadata"] = None
+
+
+class MutationStrategyMetadata(BaseModel):
+    """Replay metadata describing how a mutation strategy produced a prompt."""
+
+    strategy_name: str
+    template_version: str = ""
+    seed: int
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+    operators: list[str] = Field(default_factory=list)
+    turn_number: int = 1
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationTurn(BaseModel):
+    """One prompt/response exchange in a conversation-aware audit trace."""
+
+    turn_id: str
+    conversation_id: str
+    turn_number: int
+    parent_turn_id: Optional[str] = None
+    prompt_text: str
+    response_text: str = ""
+    mutation_source: str = "static"
+    target_type: Literal["endpoint", "proxy", "local"] = "endpoint"
+    transport: Literal["http", "websocket", "local"] = "http"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationTrace(BaseModel):
+    """Full multi-turn conversation trace for one base prompt or replayed session."""
+
+    conversation_id: str
+    base_id: str
+    category: str = ""
+    target_type: Literal["endpoint", "proxy", "local"] = "endpoint"
+    transport: Literal["http", "websocket", "local"] = "http"
+    turns: list[ConversationTurn] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProxyExchange(BaseModel):
+    """Captured HTTP/WebSocket exchange metadata used by proxy and replay modes."""
+
+    exchange_id: str
+    session_id: str
+    target_type: Literal["endpoint", "proxy", "local"] = "proxy"
+    transport: Literal["http", "websocket", "local"] = "http"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    method: Optional[str] = None
+    url: Optional[str] = None
+    request_headers: dict[str, str] = Field(default_factory=dict)
+    request_body: Optional[str] = None
+    response_status: Optional[int] = None
+    response_headers: dict[str, str] = Field(default_factory=dict)
+    response_body: Optional[str] = None
+    prompt_text: Optional[str] = None
+    response_text: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class LLMResponseRecord(BaseModel):

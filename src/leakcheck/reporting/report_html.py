@@ -82,6 +82,12 @@ def write_report_html(
     campaign = run_meta.get("campaign_name") or _dig(run_meta, ["config", "run", "name"]) or ""
     model = run_meta.get("model") or _dig(run_meta, ["config", "llm", "params", "model"]) or "—"
     sim_model = _dig(run_meta, ["config", "detection", "similarity_model"]) or "—"
+    scoring_policy_path = (
+        run_meta.get("scoring_policy_path")
+        or run_meta.get("scoring_policy")
+        or _dig(run_meta, ["config", "scoring", "thresholds_file"])
+        or "—"
+    )
 
     total: int = int(summary.get("total", 0))
     by_cat: dict[str, dict[str, Any]] = dict(summary.get("by_category", {}) or {})
@@ -141,6 +147,23 @@ def write_report_html(
         prompt_text: str = _esc(r.get("prompt_text", ""))
         response_text: str = _esc(r.get("response_text", ""))
         latency = r.get("latency_ms", 0)
+        prompt_chain = list(r.get("prompt_chain", []) or [])
+        response_chain = list(r.get("response_chain", []) or [])
+        conversation_html = ""
+        if prompt_chain or response_chain:
+            chain_rows: list[str] = []
+            for turn_idx, prompt_item in enumerate(prompt_chain, 1):
+                response_item = response_chain[turn_idx - 1] if turn_idx - 1 < len(response_chain) else ""
+                chain_rows.append(f"""
+                  <div class="chain-turn">
+                    <div><strong>Turn {turn_idx} prompt</strong><pre>{_esc(str(prompt_item))[:1200]}</pre></div>
+                    <div><strong>Turn {turn_idx} response</strong><pre>{_esc(str(response_item))[:1200]}</pre></div>
+                  </div>""")
+            conversation_html = f"""
+              <div class="detail-card" style="grid-column:1/-1">
+                <h4>Conversation Chain</h4>
+                {''.join(chain_rows)}
+              </div>"""
 
         prompt_preview = prompt_text[:2000]  # type: ignore[index]
         response_preview = response_text[:2000]  # type: ignore[index]
@@ -170,8 +193,10 @@ def write_report_html(
               <div class="detail-meta">
                 <span>Similarity: <strong>{sim:.4f}</strong></span>
                 <span>Latency: <strong>{latency}ms</strong></span>
+                <span>Conversation score: <strong>{float(r.get("conversation_score", 0.0)):.2f}</strong></span>
                 <span>Response signals: <strong>{', '.join(_esc(s) for s in resp_sig) or '—'}</strong></span>
               </div>
+              {conversation_html}
               <div class="detail-card" style="grid-column:1/-1">
                 <h4>Scoring Explanation</h4>
                 <div style="font-size:0.82rem;line-height:1.7">
@@ -377,6 +402,11 @@ body{{
   white-space:pre-wrap;word-break:break-word;font-size:0.82rem;
   color:var(--muted);line-height:1.5;max-height:300px;overflow-y:auto;
 }}
+.chain-turn{{
+  display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;
+}}
+@media(max-width:768px){{.chain-turn{{grid-template-columns:1fr}}}}
+.chain-turn strong{{display:block;color:var(--accent);font-size:0.78rem;margin-bottom:0.35rem}}
 .detail-meta{{
   grid-column:1/-1;display:flex;gap:2rem;flex-wrap:wrap;
   padding:0.5rem 0;font-size:0.85rem;
@@ -486,6 +516,7 @@ body{{
       <div>Avg Attack Risk: <strong>{avg_attack_risk:.2f}</strong></div>
       <div>Avg Leak Severity: <strong>{avg_signoff:.2f}</strong></div>
       <div>Similarity Model: <strong>{_esc(sim_model)}</strong></div>
+      <div>Scoring Policy: <strong>{_esc(scoring_policy_path)}</strong></div>
     </div>
   </div>
 

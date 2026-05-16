@@ -6,6 +6,11 @@ from typing import Callable
 from leakcheck.attack import operators as ops
 from leakcheck.common.schemas import MutationRecord, PromptRecord
 
+LOW_MUTATION_OPERATORS = ["format_shift", "obfuscate_spacing"]
+MEDIUM_MUTATION_OPERATORS = LOW_MUTATION_OPERATORS + ["prefix_injection"]
+HIGH_MUTATION_OPERATORS = MEDIUM_MUTATION_OPERATORS + ["role_wrapper", "instruction_stack"]
+BENIGN_MUTATION_OPERATORS = ["benign_rephrase_prefix", "benign_wrapper"]
+
 OP_MAP: dict[str, Callable[[str, random.Random], str]] = {
     # attack-style
     "prefix_injection": ops.prefix_injection,
@@ -20,6 +25,31 @@ OP_MAP: dict[str, Callable[[str, random.Random], str]] = {
     "format_shift": ops.format_shift,
     "obfuscate_spacing": ops.obfuscate_spacing,
 }
+
+
+def mutation_preset_from_level(level: int) -> str:
+    if level <= 0:
+        return "custom"
+    if level <= 2:
+        return "low"
+    if level == 3:
+        return "medium"
+    return "high"
+
+
+def operators_from_level(level: int, configured_ops: list[str]) -> list[str]:
+    if level <= 0:
+        return configured_ops
+
+    if level == 1:
+        return ["format_shift"] + BENIGN_MUTATION_OPERATORS
+    if level == 2:
+        return LOW_MUTATION_OPERATORS + BENIGN_MUTATION_OPERATORS
+    if level == 3:
+        return MEDIUM_MUTATION_OPERATORS + BENIGN_MUTATION_OPERATORS
+    if level == 4:
+        return MEDIUM_MUTATION_OPERATORS + ["role_wrapper"] + BENIGN_MUTATION_OPERATORS
+    return HIGH_MUTATION_OPERATORS + BENIGN_MUTATION_OPERATORS
 
 # Operators allowed per category
 ATTACK_OPS = {

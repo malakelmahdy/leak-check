@@ -10,6 +10,18 @@ dataset:
   id_field: "id"
   category_field: "category"
 
+target:
+  type: "endpoint"   # endpoint | proxy
+  transport: "http"  # http | websocket | local
+
+conversation:
+  enabled: false
+  max_turns: 1
+  stop_on_success: true
+
+mutation:
+  strategy: "static" # static | slm
+
 attack:
   enabled: true
   mutations_per_prompt: 3
@@ -36,6 +48,31 @@ llm:
     model: "llama-3.2-3b-instruct"
     temperature: 0.3
     max_tokens: 256
+
+slm:
+  provider: "openai_compatible"
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  model: "small-local-model"
+  temperature: 0.4
+  max_tokens: 128
+  prompt_template_version: "slm_mutator_v1"
+  human_review: false
+
+proxy:
+  mode: "passive"          # passive | replay | active
+  implementation: "reverse_proxy" # reverse_proxy | mitm
+  storage_root: "data/proxy_sessions"
+  retention_limit: 500
+  sanitize_reports: true
+  mitm:
+    listen_host: "127.0.0.1"
+    listen_port: 8080
+    cert_dir: "data/proxy_certs"
+  active_injection:
+    enabled: false
+    allowlist: []
+    dry_run: true
+    max_prompt_count: 5
 
 detection:
   enabled: true

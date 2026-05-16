@@ -48,6 +48,12 @@ def write_report_md(out_path: Path, run_meta: dict[str, Any], summary: dict[str,
     sim_thr = _dig(run_meta, ["config", "detection", "similarity_threshold"])
     use_learned = _dig(run_meta, ["config", "detection", "use_learned_anchors"])
     learned_path = _dig(run_meta, ["config", "detection", "learned_anchors_path"])
+    scoring_policy_path = (
+        run_meta.get("scoring_policy_path")
+        or run_meta.get("scoring_policy")
+        or _dig(run_meta, ["config", "scoring", "thresholds_file"])
+        or ""
+    )
 
     lines: list[str] = []
     lines.append("# Leak Check Report\n")
@@ -73,6 +79,8 @@ def write_report_md(out_path: Path, run_meta: dict[str, Any], summary: dict[str,
         cfg_lines.append(f"- Learned anchors: `{bool(use_learned)}`")
     if learned_path and use_learned:
         cfg_lines.append(f"- Learned anchors path: `{learned_path}`")
+    if scoring_policy_path:
+        cfg_lines.append(f"- Scoring policy path: `{scoring_policy_path}`")
 
     if cfg_lines:
         lines.append("## Config\n")
@@ -83,6 +91,9 @@ def write_report_md(out_path: Path, run_meta: dict[str, Any], summary: dict[str,
     lines.append(f"- Total prompts: **{summary.get('total', 0)}**")
     lines.append(f"- Worst attack risk: **{float(summary.get('worst_attack_risk_score', 0.0)):.2f}** ({summary.get('worst_attack_risk_band', 'none')})")
     lines.append(f"- Worst signoff severity: **{float(summary.get('worst_signoff_score', 0.0)):.2f}** ({summary.get('worst_signoff_label', 'none')})")
+    if int(summary.get("conversation_count", 0)) > 0:
+        lines.append(f"- Conversations: **{int(summary.get('conversation_count', 0))}**")
+        lines.append(f"- Worst conversation score: **{float(summary.get('worst_conversation_score', 0.0)):.2f}**")
     lines.append(f"- Validated critical findings: **{int(summary.get('validated_critical_count', 0))}**")
     lines.append(f"- Review queue count: **{int(summary.get('review_queue_count', 0))}**")
     top_10 = summary.get("top_10", []) or []
@@ -162,5 +173,14 @@ def write_report_md(out_path: Path, run_meta: dict[str, Any], summary: dict[str,
             lines.append(f"   Rationale: {legacy_explanation['rationale']}")
         if contributor_bits:
             lines.append(f"   Signoff detail: {', '.join(contributor_bits)}")
+        prompt_chain = r.get("prompt_chain", []) or []
+        response_chain = r.get("response_chain", []) or []
+        if prompt_chain or response_chain:
+            lines.append("   Conversation chain:")
+            for turn_idx, prompt_text in enumerate(prompt_chain, 1):
+                response_text = str(response_chain[turn_idx - 1]) if turn_idx - 1 < len(response_chain) else ""
+                lines.append(f"   - Turn {turn_idx} prompt: {str(prompt_text)[:240]}")
+                if response_text:
+                    lines.append(f"     Turn {turn_idx} response: {response_text[:240]}")
 
     out_path.write_text("\n".join(lines), encoding="utf-8")

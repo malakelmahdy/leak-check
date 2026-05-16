@@ -17,7 +17,10 @@ import random
 from pathlib import Path
 from typing import TypeAlias
 
-import pyarrow.parquet as pq
+try:
+    import pyarrow.parquet as pq
+except ModuleNotFoundError:
+    pq = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -73,6 +76,9 @@ def load_parquet_safety() -> list[PromptRow]:
     path = DATASETS_ROOT / "prompt-injection-safety" / "test-00000-of-00001.parquet"
     if not path.exists():
         print(f"  [SKIP] {path} not found")
+        return []
+    if pq is None:
+        print("  [SKIP] pyarrow is not installed; cannot read parquet source")
         return []
 
     table = pq.read_table(path)

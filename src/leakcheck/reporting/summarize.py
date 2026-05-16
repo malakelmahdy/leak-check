@@ -62,6 +62,8 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "validated_critical_count": 0,
         "review_queue_count": 0,
         "finding_count": 0,
+        "conversation_count": 0,
+        "worst_conversation_score": 0.0,
     }
 
     deduped_findings: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -111,6 +113,16 @@ def summarize_results(results: list[dict[str, Any]]) -> dict[str, Any]:
             deduped_findings.setdefault(key, finding)
 
     summary["finding_count"] = len(deduped_findings)
+    conversations = {
+        str(record.get("conversation_id"))
+        for record in results
+        if record.get("conversation_id")
+    }
+    summary["conversation_count"] = len(conversations)
+    summary["worst_conversation_score"] = max(
+        (float(record.get("conversation_score", 0.0)) for record in results),
+        default=0.0,
+    )
     critical_keys: set[tuple[str, str, str]] = set()
     for record in results:
         score_map = _score_by_finding(record)
