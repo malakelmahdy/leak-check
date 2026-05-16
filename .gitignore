@@ -10,7 +10,7 @@ dist/
 build/
 .eggs/
 MANIFEST
-
+.gitignore
 # ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
@@ -26,6 +26,7 @@ data/processed/
 data/reports/
 data/test_report_outputs/
 data/pytest_tmp/
+data/proxy_certs/
 
 # ── Secrets & credentials ─────────────────────────────────────────────────────
 .env
@@ -80,3 +81,10 @@ dmypy.json
 CLAUDE.md
 agents/
 data/test_prepare_datasets/
+
+
+/docs/
+server.out.log
+server.err.log
+
+README.md
